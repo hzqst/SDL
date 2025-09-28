@@ -8,6 +8,12 @@ set(CMAKE_POLICY_DEFAULT_CMP0091 NEW)
 cmake_minimum_required(VERSION 3.0.0...3.10)
 project(SDL2 C)
 
+option(USE_VCLTL "USE VCLTL" OFF)
+
+if(USE_VCLTL)
+include("VC-LTL helper for cmake.cmake")
+endif()
+
 if(CMAKE_SOURCE_DIR STREQUAL PROJECT_SOURCE_DIR)
   set(SDL2_SUBPROJECT OFF)
 else()
