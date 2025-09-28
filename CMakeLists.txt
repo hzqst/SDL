@@ -7,6 +7,12 @@ endif()
 # See docs/release_checklist.md
 project(SDL3 LANGUAGES C VERSION "3.3.0")
 
+option(USE_VCLTL "USE VCLTL" OFF)
+
+if(USE_VCLTL)
+include("VC-LTL helper for cmake.cmake")
+endif()
+
 if(CMAKE_SOURCE_DIR STREQUAL PROJECT_SOURCE_DIR)
   set(SDL3_MAINPROJECT ON)
 else()
