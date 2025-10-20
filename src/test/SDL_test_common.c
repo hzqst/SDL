@@ -1523,9 +1523,7 @@ bool SDLTest_CommonInit(SDLTest_CommonState *state)
         }
     }
 
-    if (state->flags & SDL_INIT_CAMERA) {
-        SDL_InitSubSystem(SDL_INIT_CAMERA);
-    }
+    SDL_InitSubSystem(state->flags);
 
     return true;
 }
@@ -1624,6 +1622,14 @@ void SDLTest_PrintEvent(const SDL_Event *event)
             float scale = SDL_GetDisplayContentScale(event->display.displayID);
             SDL_Log("SDL EVENT: Display %" SDL_PRIu32 " changed content scale to %d%%",
                     event->display.displayID, (int)(scale * 100.0f));
+        }
+        break;
+    case SDL_EVENT_DISPLAY_USABLE_BOUNDS_CHANGED:
+        {
+            SDL_Rect bounds;
+            SDL_GetDisplayUsableBounds(event->display.displayID, &bounds);
+            SDL_Log("SDL EVENT: Display %" SDL_PRIu32 " changed usable bounds to %dx%d at %d,%d",
+                    event->display.displayID, bounds.w, bounds.h, bounds.x, bounds.y);
         }
         break;
     case SDL_EVENT_DISPLAY_DESKTOP_MODE_CHANGED:
@@ -1803,12 +1809,12 @@ void SDLTest_PrintEvent(const SDL_Event *event)
                 event->wheel.x, event->wheel.y, event->wheel.direction, event->wheel.windowID);
         break;
     case SDL_EVENT_JOYSTICK_ADDED:
-        SDL_Log("SDL EVENT: Joystick %" SDL_PRIu32 " attached",
-                event->jdevice.which);
+        SDL_Log("SDL EVENT: Joystick %" SDL_PRIu32 " (%s) attached",
+                event->jdevice.which, SDL_GetJoystickNameForID(event->jdevice.which));
         break;
     case SDL_EVENT_JOYSTICK_REMOVED:
-        SDL_Log("SDL EVENT: Joystick %" SDL_PRIu32 " removed",
-                event->jdevice.which);
+        SDL_Log("SDL EVENT: Joystick %" SDL_PRIu32 " (%s) removed",
+                event->jdevice.which, SDL_GetJoystickNameForID(event->jdevice.which));
         break;
     case SDL_EVENT_JOYSTICK_AXIS_MOTION:
         SDL_Log("SDL EVENT: Joystick %" SDL_PRIu32 " axis %d value: %d",
@@ -1869,12 +1875,12 @@ void SDLTest_PrintEvent(const SDL_Event *event)
                 event->jbattery.which, event->jbattery.percent);
         break;
     case SDL_EVENT_GAMEPAD_ADDED:
-        SDL_Log("SDL EVENT: Gamepad %" SDL_PRIu32 " attached",
-                event->gdevice.which);
+        SDL_Log("SDL EVENT: Gamepad %" SDL_PRIu32 " (%s) attached",
+                event->gdevice.which, SDL_GetGamepadNameForID(event->gdevice.which));
         break;
     case SDL_EVENT_GAMEPAD_REMOVED:
-        SDL_Log("SDL EVENT: Gamepad %" SDL_PRIu32 " removed",
-                event->gdevice.which);
+        SDL_Log("SDL EVENT: Gamepad %" SDL_PRIu32 " (%s) removed",
+                event->gdevice.which, SDL_GetGamepadNameForID(event->gdevice.which));
         break;
     case SDL_EVENT_GAMEPAD_REMAPPED:
         SDL_Log("SDL EVENT: Gamepad %" SDL_PRIu32 " mapping changed",
@@ -1918,6 +1924,16 @@ void SDLTest_PrintEvent(const SDL_Event *event)
                 event->tfinger.fingerID,
                 event->tfinger.x, event->tfinger.y,
                 event->tfinger.dx, event->tfinger.dy, event->tfinger.pressure);
+        break;
+
+    case SDL_EVENT_PINCH_BEGIN:
+        SDL_Log("SDL EVENT: Pinch Begin");
+        break;
+    case SDL_EVENT_PINCH_UPDATE:
+        SDL_Log("SDL EVENT: Pinch Update, scale=%f", event->pinch.scale);
+        break;
+    case SDL_EVENT_PINCH_END:
+        SDL_Log("SDL EVENT: Pinch End");
         break;
 
     case SDL_EVENT_RENDER_TARGETS_RESET:
@@ -2059,9 +2075,7 @@ static void SDLCALL SDLTest_ScreenShotClipboardCleanup(void *context)
 
     SDL_Log("Cleaning up screenshot image data");
 
-    if (data->image) {
-        SDL_free(data->image);
-    }
+    SDL_free(data->image);
     SDL_free(data);
 }
 
@@ -2230,6 +2244,7 @@ SDL_AppResult SDLTest_CommonEventMainCallbacks(SDLTest_CommonState *state, const
              event->type != SDL_EVENT_FINGER_MOTION &&
              event->type != SDL_EVENT_PEN_MOTION &&
              event->type != SDL_EVENT_PEN_AXIS &&
+             event->type != SDL_EVENT_PINCH_UPDATE &&
              event->type != SDL_EVENT_JOYSTICK_AXIS_MOTION) ||
             (state->verbose & VERBOSE_MOTION)) {
             SDLTest_PrintEvent(event);
