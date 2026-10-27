@@ -1,5 +1,5 @@
 /*
-  Copyright (C) 1997-2025 Sam Lantinga <slouken@libsdl.org>
+  Copyright (C) 1997-2026 Sam Lantinga <slouken@libsdl.org>
 
   This software is provided 'as-is', without any express or implied
   warranty.  In no event will the authors be held liable for any damages
@@ -12,7 +12,7 @@
 /* Simple program:  Move N sprites around on the screen as fast as possible */
 
 #include <SDL3/SDL.h>
-#include <SDL3/SDL_test_memory.h>
+#include <SDL3/SDL_test.h>
 #include <SDL3/SDL_main.h>
 
 #ifdef SDL_PLATFORM_EMSCRIPTEN
@@ -304,7 +304,7 @@ static SDL_Texture *CreateTexture(const void *pixels, int pitch)
     return tex;
 }
 
-static bool CreateTextures()
+static bool CreateTextures(void)
 {
     Uint8 data[256];
     int i;
@@ -456,18 +456,32 @@ int main(int argc, char *argv[])
 {
     SDL_Window *window = NULL;
     int i, return_code = -1;
+    SDLTest_CommonState *state;
 
-    SDLTest_TrackAllocations();
+    state = SDLTest_CommonCreateState(argv, 0);
+    if (!state) {
+        goto quit;
+    }
 
-    for (i = 1; i < argc; ++i) {
-        if (SDL_strcmp(argv[1], "--renderer") == 0 && argv[i + 1]) {
-            ++i;
-            SDL_SetHint(SDL_HINT_RENDER_DRIVER, argv[i]);
-        } else {
-            SDL_Log("Usage: %s [--renderer driver]", argv[0]);
+    for (i = 1; i < argc; ) {
+        int consumed = SDLTest_CommonArg(state, i);
+        SDL_Log("consumed=%d", consumed);
+        if (consumed == 0) {
+            if (SDL_strcmp(argv[i], "--renderer") == 0 && argv[i + 1]) {
+                SDL_SetHint(SDL_HINT_RENDER_DRIVER, argv[i + 1]);
+                consumed = 2;
+            }
+        }
+        if (consumed <= 0) {
+            static const char *options[] = {
+                "[--renderer RENDERER]",
+                NULL,
+            };
+            SDLTest_CommonLogUsage(state, argv[0], options);
             return_code = 1;
             goto quit;
         }
+        i += consumed;
     }
 
     if (!SDL_CreateWindowAndRenderer("testpalette", WINDOW_WIDTH, WINDOW_HEIGHT, SDL_WINDOW_RESIZABLE, &window, &renderer)) {
@@ -498,6 +512,6 @@ quit:
     SDL_DestroyRenderer(renderer);
     SDL_DestroyWindow(window);
     SDL_Quit();
-    SDLTest_LogAllocations();
+    SDLTest_CommonDestroyState(state);
     return return_code;
 }

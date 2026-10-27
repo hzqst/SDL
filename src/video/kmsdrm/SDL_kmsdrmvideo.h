@@ -1,6 +1,6 @@
 /*
   Simple DirectMedia Layer
-  Copyright (C) 1997-2025 Sam Lantinga <slouken@libsdl.org>
+  Copyright (C) 1997-2026 Sam Lantinga <slouken@libsdl.org>
 
   This software is provided 'as-is', without any express or implied
   warranty.  In no event will the authors be held liable for any damages
@@ -237,5 +237,6 @@ extern void KMSDRM_MaximizeWindow(SDL_VideoDevice *_this, SDL_Window *window);
 extern void KMSDRM_MinimizeWindow(SDL_VideoDevice *_this, SDL_Window *window);
 extern void KMSDRM_RestoreWindow(SDL_VideoDevice *_this, SDL_Window *window);
 extern void KMSDRM_DestroyWindow(SDL_VideoDevice *_this, SDL_Window *window);
+extern bool KMSDRM_SetWindowFocusable(SDL_VideoDevice *_this, SDL_Window *window, bool focusable);
 
 #endif // SDL_kmsdrmvideo_h

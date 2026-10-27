@@ -1,6 +1,6 @@
 /*
   Simple DirectMedia Layer
-  Copyright (C) 1997-2025 Sam Lantinga <slouken@libsdl.org>
+  Copyright (C) 1997-2026 Sam Lantinga <slouken@libsdl.org>
 
   This software is provided 'as-is', without any express or implied
   warranty.  In no event will the authors be held liable for any damages
@@ -146,6 +146,16 @@
 #define SDL_tcsstr       SDL_strstr
 #endif
 
+#if defined(__LP64__)
+#define SDL_PRIdSLONG   "d"
+#define SDL_PRIuULONG   "u"
+#define SDL_PRIxSLONG   "x"
+#else
+#define SDL_PRIdSLONG   "ld"
+#define SDL_PRIuULONG   "lu"
+#define SDL_PRIxSLONG   "lx"
+#endif
+
 // Set up for C function definitions, even when using C++
 #ifdef __cplusplus
 extern "C" {
@@ -168,6 +178,9 @@ extern void WIN_CoUninitialize(void);
 extern HRESULT WIN_RoInitialize(void);
 extern void WIN_RoUninitialize(void);
 
+// Returns true if we're running on Wine
+extern BOOL WIN_IsWine(void);
+
 // Returns true if we're running on Windows XP (any service pack). DOES NOT CHECK XP "OR GREATER"!
 extern BOOL WIN_IsWindowsXP(void);
 
@@ -179,6 +192,15 @@ extern BOOL WIN_IsWindows7OrGreater(void);
 
 // Returns true if we're running on Windows 8 and newer
 extern BOOL WIN_IsWindows8OrGreater(void);
+
+// Returns true if we're running on Windows 8.1 and newer
+extern BOOL WIN_IsWindows81OrGreater(void);
+
+// Returns true if we're running on Windows 10 and newer
+extern BOOL WIN_IsWindows10OrGreater(void);
+
+// Returns true if we're running on Windows 11 and newer
+extern BOOL WIN_IsWindows11OrGreater(void);
 
 // You need to SDL_free() the result of this call.
 extern char *WIN_LookupAudioDeviceName(const WCHAR *name, const GUID *guid);
@@ -202,6 +224,15 @@ extern SDL_AudioFormat SDL_WaveFormatExToSDLFormat(WAVEFORMATEX *waveformat);
 
 // WideCharToMultiByte, but with some WinXP management.
 extern int WIN_WideCharToMultiByte(UINT CodePage, DWORD dwFlags, LPCWCH lpWideCharStr, int cchWideChar, LPSTR lpMultiByteStr, int cbMultiByte, LPCCH lpDefaultChar, LPBOOL lpUsedDefaultChar);
+
+// parse out command lines from OS if argv is NULL, otherwise pass through unchanged. `*pallocated` must be HeapFree'd by caller if not NULL on successful return. Returns NULL on success, error string on problems.
+extern const char *WIN_CheckDefaultArgcArgv(int *pargc, char ***pargv, void **pallocated);
+
+// Does all the win32 tapdancing to make GetModuleFileName work. Returns a SDL_malloc'd UTF-8 string, or NULL on failure.
+extern char *WIN_GetModulePath(HMODULE handle);
+
+// Return true if this system has a broken EZFRD64.DLL installed
+extern bool WIN_HasBrokenEZFRD64DLL(void);
 
 // Ends C function definitions when using C++
 #ifdef __cplusplus

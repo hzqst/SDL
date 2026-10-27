@@ -1,5 +1,5 @@
 /*
-  Copyright (C) 1997-2025 Sam Lantinga <slouken@libsdl.org>
+  Copyright (C) 1997-2026 Sam Lantinga <slouken@libsdl.org>
 
   This software is provided 'as-is', without any express or implied
   warranty.  In no event will the authors be held liable for any damages
@@ -33,7 +33,7 @@
 #define PANEL_SPACING 25.0f
 #define PANEL_WIDTH 250.0f
 #define GAMEPAD_WIDTH 512.0f
-#define GAMEPAD_HEIGHT 560.0f
+#define GAMEPAD_HEIGHT 596.0f
 #define BUTTON_MARGIN  16.0f
 #define SCREEN_WIDTH  (PANEL_WIDTH + PANEL_SPACING + GAMEPAD_WIDTH + PANEL_SPACING + PANEL_WIDTH)
 #define SCREEN_HEIGHT (TITLE_HEIGHT + GAMEPAD_HEIGHT)
@@ -286,11 +286,13 @@ void CalibrationPhase_DriftProfiling(IMUState *imustate)
 /* Sample gyro packet in order to calculate drift*/
 void SampleGyroPacketForDrift(IMUState *imustate)
 {
-    /* Get the length squared difference of the last accelerometer data vs. the new one */
+    /* Get the length squared difference of the last accelerometer data vs. the new one.
+     * The accelerometer data is in meters per second squared, but the noise thresholds are in G.
+     */
     float accelerometer_difference[3];
-    accelerometer_difference[0] = imustate->accel_data[0] - imustate->last_accel_data[0];
-    accelerometer_difference[1] = imustate->accel_data[1] - imustate->last_accel_data[1];
-    accelerometer_difference[2] = imustate->accel_data[2] - imustate->last_accel_data[2];
+    accelerometer_difference[0] = (imustate->accel_data[0] - imustate->last_accel_data[0]) / SDL_STANDARD_GRAVITY;
+    accelerometer_difference[1] = (imustate->accel_data[1] - imustate->last_accel_data[1]) / SDL_STANDARD_GRAVITY;
+    accelerometer_difference[2] = (imustate->accel_data[2] - imustate->last_accel_data[2]) / SDL_STANDARD_GRAVITY;
     SDL_memcpy(imustate->last_accel_data, imustate->accel_data, sizeof(imustate->last_accel_data));
     imustate->accelerometer_length_squared = accelerometer_difference[0] * accelerometer_difference[0] + accelerometer_difference[1] * accelerometer_difference[1] + accelerometer_difference[2] * accelerometer_difference[2];
 
@@ -378,9 +380,16 @@ static SDL_GamepadAxis virtual_axis_active = SDL_GAMEPAD_AXIS_INVALID;
 static float virtual_axis_start_x;
 static float virtual_axis_start_y;
 static SDL_GamepadButton virtual_button_active = SDL_GAMEPAD_BUTTON_INVALID;
-static bool virtual_touchpad_active = false;
-static float virtual_touchpad_x;
-static float virtual_touchpad_y;
+
+typedef struct
+{
+    bool active;
+    float x;
+    float y;
+} VirtualTouchpad;
+
+#define MAX_VIRTUAL_TOUCHPADS 2
+static VirtualTouchpad virtual_touchpad[MAX_VIRTUAL_TOUCHPADS];
 
 static int s_arrBindingOrder[] = {
     /* Standard sequence */
@@ -1069,7 +1078,6 @@ static const char *GetBindingInstruction(void)
         default:
             return "";
         }
-        break;
     case SDL_GAMEPAD_BUTTON_BACK:
         return "Press the left center button (Back/View/Share)";
     case SDL_GAMEPAD_BUTTON_GUIDE:
@@ -1586,8 +1594,14 @@ static bool SDLCALL VirtualGamepadSetLED(void *userdata, Uint8 red, Uint8 green,
 
 static void OpenVirtualGamepad(void)
 {
-    SDL_VirtualJoystickTouchpadDesc virtual_touchpad = { 1, { 0, 0, 0 } };
-    SDL_VirtualJoystickSensorDesc virtual_sensor = { SDL_SENSOR_ACCEL, 0.0f };
+    SDL_VirtualJoystickTouchpadDesc virtual_touchpad_desc[MAX_VIRTUAL_TOUCHPADS] = {
+        { 1, { 0, 0, 0 } },
+        { 1, { 0, 0, 0 } }
+    };
+    SDL_VirtualJoystickSensorDesc virtual_sensors[] = {
+        { SDL_SENSOR_ACCEL, 0.0f },
+        { SDL_SENSOR_GYRO, 0.0f }
+    };
     SDL_VirtualJoystickDesc desc;
     SDL_JoystickID virtual_id;
 
@@ -1599,10 +1613,10 @@ static void OpenVirtualGamepad(void)
     desc.type = SDL_JOYSTICK_TYPE_GAMEPAD;
     desc.naxes = SDL_GAMEPAD_AXIS_COUNT;
     desc.nbuttons = SDL_GAMEPAD_BUTTON_COUNT;
-    desc.ntouchpads = 1;
-    desc.touchpads = &virtual_touchpad;
-    desc.nsensors = 1;
-    desc.sensors = &virtual_sensor;
+    desc.ntouchpads = MAX_VIRTUAL_TOUCHPADS;
+    desc.touchpads = virtual_touchpad_desc;
+    desc.nsensors = SDL_arraysize(virtual_sensors);
+    desc.sensors = virtual_sensors;
     desc.SetPlayerIndex = VirtualGamepadSetPlayerIndex;
     desc.Rumble = VirtualGamepadRumble;
     desc.RumbleTriggers = VirtualGamepadRumbleTriggers;
@@ -1679,12 +1693,14 @@ static void VirtualGamepadMouseMotion(float x, float y)
         }
     }
 
-    if (virtual_touchpad_active) {
-        SDL_FRect touchpad;
-        GetGamepadTouchpadArea(image, &touchpad);
-        virtual_touchpad_x = (x - touchpad.x) / touchpad.w;
-        virtual_touchpad_y = (y - touchpad.y) / touchpad.h;
-        SDL_SetJoystickVirtualTouchpad(virtual_joystick, 0, 0, true, virtual_touchpad_x, virtual_touchpad_y, 1.0f);
+    for (int i = 0; i < MAX_VIRTUAL_TOUCHPADS; ++i) {
+        if (virtual_touchpad[i].active) {
+            SDL_FRect touchpad;
+            GetGamepadTouchpadArea(image, &touchpad, i);
+            virtual_touchpad[i].x = (x - touchpad.x) / touchpad.w;
+            virtual_touchpad[i].y = (y - touchpad.y) / touchpad.h;
+            SDL_SetJoystickVirtualTouchpad(virtual_joystick, i, 0, true, virtual_touchpad[i].x, virtual_touchpad[i].y, 1.0f);
+        }
     }
 }
 
@@ -1693,16 +1709,18 @@ static void VirtualGamepadMouseDown(float x, float y)
     int element = GetGamepadImageElementAt(image, x, y);
 
     if (element == SDL_GAMEPAD_ELEMENT_INVALID) {
-        SDL_FPoint point;
-        point.x = x;
-        point.y = y;
-        SDL_FRect touchpad;
-        GetGamepadTouchpadArea(image, &touchpad);
-        if (SDL_PointInRectFloat(&point, &touchpad)) {
-            virtual_touchpad_active = true;
-            virtual_touchpad_x = (x - touchpad.x) / touchpad.w;
-            virtual_touchpad_y = (y - touchpad.y) / touchpad.h;
-            SDL_SetJoystickVirtualTouchpad(virtual_joystick, 0, 0, true, virtual_touchpad_x, virtual_touchpad_y, 1.0f);
+        for (int i = 0; i < MAX_VIRTUAL_TOUCHPADS; ++i) {
+            SDL_FPoint point;
+            point.x = x;
+            point.y = y;
+            SDL_FRect touchpad;
+            GetGamepadTouchpadArea(image, &touchpad, i);
+            if (SDL_PointInRectFloat(&point, &touchpad)) {
+                virtual_touchpad[i].active = true;
+                virtual_touchpad[i].x = (x - touchpad.x) / touchpad.w;
+                virtual_touchpad[i].y = (y - touchpad.y) / touchpad.h;
+                SDL_SetJoystickVirtualTouchpad(virtual_joystick, i, 0, true, virtual_touchpad[i].x, virtual_touchpad[i].y, 1.0f);
+            }
         }
         return;
     }
@@ -1754,9 +1772,11 @@ static void VirtualGamepadMouseUp(float x, float y)
         virtual_axis_active = SDL_GAMEPAD_AXIS_INVALID;
     }
 
-    if (virtual_touchpad_active) {
-        SDL_SetJoystickVirtualTouchpad(virtual_joystick, 0, 0, false, virtual_touchpad_x, virtual_touchpad_y, 0.0f);
-        virtual_touchpad_active = false;
+    for (int i = 0; i < MAX_VIRTUAL_TOUCHPADS; ++i) {
+        if (virtual_touchpad[i].active) {
+            SDL_SetJoystickVirtualTouchpad(virtual_joystick, i, 0, false, virtual_touchpad[i].x, virtual_touchpad[i].y, 0.0f);
+            virtual_touchpad[i].active = false;
+        }
     }
 }
 
@@ -2195,6 +2215,16 @@ SDL_AppResult SDLCALL SDL_AppEvent(void *appstate, SDL_Event *event)
         }
         break;
 
+    case SDL_EVENT_GAMEPAD_CAPSENSE_TOUCH:
+    case SDL_EVENT_GAMEPAD_CAPSENSE_RELEASE:
+#ifdef VERBOSE_CAPSENSE
+        SDL_Log("Gamepad %" SDL_PRIu32 " capsense %u %s",
+                event->gcapsense.which,
+                event->gcapsense.capsense,
+                event->gcapsense.down ? "touch" : "release");
+#endif /* VERBOSE_CAPSENSE */
+        break;
+
     case SDL_EVENT_MOUSE_BUTTON_DOWN:
         if (virtual_joystick && controller && controller->joystick == virtual_joystick) {
             VirtualGamepadMouseDown(event->button.x, event->button.y);
@@ -2208,9 +2238,9 @@ SDL_AppResult SDLCALL SDL_AppEvent(void *appstate, SDL_Event *event)
         }
 
         if (display_mode == CONTROLLER_MODE_TESTING) {
-            if (GamepadButtonContains(GetGyroResetButton(gyro_elements), event->button.x, event->button.y)) {
+            if (controller && GamepadButtonContains(GetGyroResetButton(gyro_elements), event->button.x, event->button.y)) {
                 ResetGyroOrientation(controller->imu_state);
-            } else if (GamepadButtonContains(GetGyroCalibrateButton(gyro_elements), event->button.x, event->button.y)) {
+            } else if (controller && GamepadButtonContains(GetGyroCalibrateButton(gyro_elements), event->button.x, event->button.y)) {
                 BeginNoiseCalibrationPhase(controller->imu_state);
             } else if (GamepadButtonContains(setup_mapping_button, event->button.x, event->button.y)) {
                 SetDisplayMode(CONTROLLER_MODE_BINDING);
@@ -2362,10 +2392,13 @@ SDL_AppResult SDLCALL SDL_AppEvent(void *appstate, SDL_Event *event)
 
 SDL_AppResult SDLCALL SDL_AppIterate(void *appstate)
 {
-    /* If we have a virtual controller, send a virtual accelerometer sensor reading */
+    /* If we have a virtual controller, send virtual sensor readings */
     if (virtual_joystick) {
-        float data[3] = { 0.0f, SDL_STANDARD_GRAVITY, 0.0f };
-        SDL_SendJoystickVirtualSensorData(virtual_joystick, SDL_SENSOR_ACCEL, SDL_GetTicksNS(), data, SDL_arraysize(data));
+        float accel_data[3] = { 0.0f, SDL_STANDARD_GRAVITY, 0.0f };
+        float gyro_data[3] = { 0.01f, -0.01f, 0.0f };
+        Uint64 sensor_timestamp = SDL_GetTicksNS();
+        SDL_SendJoystickVirtualSensorData(virtual_joystick, SDL_SENSOR_ACCEL, sensor_timestamp, accel_data, SDL_arraysize(accel_data));
+        SDL_SendJoystickVirtualSensorData(virtual_joystick, SDL_SENSOR_GYRO, sensor_timestamp, gyro_data, SDL_arraysize(gyro_data));
     }
 
     /* Wait 30 ms for joystick events to stop coming in,

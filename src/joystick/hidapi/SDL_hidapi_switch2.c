@@ -1,6 +1,6 @@
 /*
   Simple DirectMedia Layer
-  Copyright (C) 1997-2025 Sam Lantinga <slouken@libsdl.org>
+  Copyright (C) 1997-2026 Sam Lantinga <slouken@libsdl.org>
 
   This software is provided 'as-is', without any express or implied
   warranty.  In no event will the authors be held liable for any damages
@@ -102,7 +102,9 @@ typedef struct
     Uint64 rumble_timestamp;
     Uint32 rumble_seq;
     Uint16 rumble_hi_amp;
+    Uint16 rumble_hi_freq;
     Uint16 rumble_lo_amp;
+    Uint16 rumble_lo_freq;
     Uint32 rumble_error;
     bool rumble_updated;
 
@@ -110,6 +112,19 @@ typedef struct
     Switch2_StickCalibration right_stick;
     Uint8 left_trigger_zero;
     Uint8 right_trigger_zero;
+
+    float gyro_bias_x;
+    float gyro_bias_y;
+    float gyro_bias_z;
+    float accel_bias_x;
+    float accel_bias_y;
+    float accel_bias_z;
+    bool sensors_enabled;
+    bool sensors_ready;
+    int sample_count;
+    Uint64 first_sensor_timestamp;
+    Uint64 sensor_ts_coeff;
+    float gyro_coeff;
 
     bool player_lights;
     int player_index;
@@ -217,16 +232,17 @@ static void MapTriggerAxis(Uint64 timestamp, SDL_Joystick *joystick, Uint8 axis,
 
 static bool UpdateSlotLED(SDL_DriverSwitch2_Context *ctx)
 {
-    unsigned char SET_LED_DATA[] = {
+    Uint8 set_led_data[] = {
         0x09, 0x91, 0x00, 0x07, 0x00, 0x08, 0x00, 0x00,
         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
     };
-    unsigned char reply[8] = {0};
+    Uint8 reply[8] = {0};
+    const Uint8 player_pattern[] = { 0x1, 0x3, 0x7, 0xf, 0x9, 0x5, 0xd, 0x6 };
 
     if (ctx->player_lights && ctx->player_index >= 0) {
-        SET_LED_DATA[8] = (1 << (ctx->player_index % 4));
+        set_led_data[8] = player_pattern[ctx->player_index % 8];
     }
-    int res = SendBulkData(ctx, SET_LED_DATA, sizeof(SET_LED_DATA));
+    int res = SendBulkData(ctx, set_led_data, sizeof(set_led_data));
     if (res < 0) {
         return SDL_SetError("Couldn't set LED data: %d\n", res);
     }
@@ -235,17 +251,17 @@ static bool UpdateSlotLED(SDL_DriverSwitch2_Context *ctx)
 
 static int ReadFlashBlock(SDL_DriverSwitch2_Context *ctx, Uint32 address, Uint8 *out)
 {
-    unsigned char flash_read_command[] = {
+    Uint8 flash_read_command[] = {
         0x02, 0x91, 0x00, 0x01, 0x00, 0x08, 0x00, 0x00,
         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
     };
-    unsigned char buffer[0x50] = {0};
+    Uint8 buffer[0x50] = {0};
     int res;
 
-    flash_read_command[12] = address;
-    flash_read_command[13] = address >> 8;
-    flash_read_command[14] = address >> 16;
-    flash_read_command[15] = address >> 24;
+    flash_read_command[12] = (Uint8)address;
+    flash_read_command[13] = (Uint8)(address >> 8);
+    flash_read_command[14] = (Uint8)(address >> 16);
+    flash_read_command[15] = (Uint8)(address >> 24);
 
     res = SendBulkData(ctx, flash_read_command, sizeof(flash_read_command));
     if (res < 0) {
@@ -366,6 +382,7 @@ static bool HIDAPI_DriverSwitch2_InitUSB(SDL_HIDAPI_Device *device)
         return SDL_SetError("Couldn't find bulk endpoints");
     }
 
+    ctx->libusb->set_auto_detach_kernel_driver(ctx->device_handle, true);
     int res = ctx->libusb->claim_interface(ctx->device_handle, ctx->interface_number);
     if (res < 0) {
         return SDL_SetError("Couldn't claim interface %d: %d\n", ctx->interface_number, res);
@@ -376,14 +393,8 @@ static bool HIDAPI_DriverSwitch2_InitUSB(SDL_HIDAPI_Device *device)
         (Uint8[]) { // Unknown purpose
             0x7, 0x91, 0x0, 0x1, 0x0, 0x0, 0x0, 0x0,
         },
-        (Uint8[]) { // Unknown purpose
-            0x16, 0x91, 0x0, 0x1, 0x0, 0x0, 0x0, 0x0,
-        },
         (Uint8[]) { // Set feature output bit mask
             0x0c, 0x91, 0x00, 0x02, 0x00, 0x04, 0x00, 0x00, 0x27, 0x00, 0x00, 0x00
-        },
-        (Uint8[]) { // Unknown purpose
-            0x11, 0x91, 0x0, 0x3, 0x0, 0x0, 0x0, 0x0,
         },
         (Uint8[]) { // Unknown purpose
             0x11, 0x91, 0x0, 0x1, 0x0, 0x0, 0x0, 0x0,
@@ -398,16 +409,10 @@ static bool HIDAPI_DriverSwitch2_InitUSB(SDL_HIDAPI_Device *device)
             0x0c, 0x91, 0x00, 0x04, 0x00, 0x04, 0x00, 0x00, 0x27, 0x00, 0x00, 0x00
         },
         (Uint8[]) { // Unknown purpose
-            0x10, 0x91, 0x0, 0x1, 0x0, 0x0, 0x0, 0x0,
-        },
-        (Uint8[]) { // Unknown purpose
             0x01, 0x91, 0x0, 0xc, 0x0, 0x0, 0x0, 0x0,
         },
         (Uint8[]) { // Enable rumble
             0x01, 0x91, 0x0, 0x1, 0x0, 0x0, 0x0, 0x0,
-        },
-        (Uint8[]) { // Unknown purpose
-            0x8, 0x91, 0x0, 0x1, 0x0, 0x4, 0x0, 0x0, 0x20, 0x0, 0x0, 0x0,
         },
         (Uint8[]) { // Enable grip buttons on charging grip
             0x8, 0x91, 0x0, 0x2, 0x0, 0x4, 0x0, 0x0, 0x01, 0x0, 0x0, 0x0,
@@ -434,6 +439,15 @@ static bool HIDAPI_DriverSwitch2_InitUSB(SDL_HIDAPI_Device *device)
         HIDAPI_SetDeviceSerial(device, serial);
     }
 
+    res = ReadFlashBlock(ctx, 0x13040, calibration_data);
+    if (res < 0) {
+        SDL_LogWarn(SDL_LOG_CATEGORY_INPUT, "Couldn't read factory calibration data: %d", res);
+    } else {
+        ctx->gyro_bias_x = *(float*)&calibration_data[4];
+        ctx->gyro_bias_y = *(float*)&calibration_data[8];
+        ctx->gyro_bias_z = *(float*)&calibration_data[12];
+    }
+
     res = ReadFlashBlock(ctx, 0x13080, calibration_data);
     if (res < 0) {
         SDL_LogWarn(SDL_LOG_CATEGORY_INPUT, "Couldn't read factory calibration data: %d", res);
@@ -446,6 +460,15 @@ static bool HIDAPI_DriverSwitch2_InitUSB(SDL_HIDAPI_Device *device)
         SDL_LogWarn(SDL_LOG_CATEGORY_INPUT, "Couldn't read factory calibration data: %d", res);
     } else {
         ParseStickCalibration(&ctx->right_stick, &calibration_data[0x28]);
+    }
+
+    res = ReadFlashBlock(ctx, 0x13100, calibration_data);
+    if (res < 0) {
+        SDL_LogWarn(SDL_LOG_CATEGORY_INPUT, "Couldn't read factory calibration data: %d", res);
+    } else {
+        ctx->accel_bias_x = *(float*)&calibration_data[12];
+        ctx->accel_bias_y = *(float*)&calibration_data[16];
+        ctx->accel_bias_z = *(float*)&calibration_data[20];
     }
 
     if (device->product_id == USB_PRODUCT_NINTENDO_SWITCH2_GAMECUBE_CONTROLLER) {
@@ -504,6 +527,9 @@ static bool HIDAPI_DriverSwitch2_InitDevice(SDL_HIDAPI_Device *device)
         }
     }
 
+    ctx->sensor_ts_coeff = 10000;
+    ctx->gyro_coeff = 34.8f;
+
     // Sometimes the device handle isn't available during enumeration so we don't get the device name, so set it explicitly
     switch (device->product_id) {
     case USB_PRODUCT_NINTENDO_SWITCH2_GAMECUBE_CONTROLLER:
@@ -551,12 +577,28 @@ static bool HIDAPI_DriverSwitch2_OpenJoystick(SDL_HIDAPI_Device *device, SDL_Joy
                         SDL_PlayerLEDHintChanged, ctx);
 
     // Initialize the joystick capabilities
+    if (!ctx->device->parent) {
+        SDL_PrivateJoystickAddSensor(joystick, SDL_SENSOR_GYRO, 250.0f);
+        SDL_PrivateJoystickAddSensor(joystick, SDL_SENSOR_ACCEL, 250.0f);
+    }
     switch (device->product_id) {
     case USB_PRODUCT_NINTENDO_SWITCH2_GAMECUBE_CONTROLLER:
         joystick->nbuttons = SDL_GAMEPAD_NUM_SWITCH2_GAMECUBE_BUTTONS;
         break;
     case USB_PRODUCT_NINTENDO_SWITCH2_JOYCON_LEFT:
+        if (ctx->device->parent) {
+            SDL_PrivateJoystickAddSensor(joystick, SDL_SENSOR_GYRO_L, 250.0f);
+            SDL_PrivateJoystickAddSensor(joystick, SDL_SENSOR_ACCEL_L, 250.0f);
+        }
+        joystick->nbuttons = SDL_GAMEPAD_NUM_SWITCH2_JOYCON_BUTTONS;
+        break;
     case USB_PRODUCT_NINTENDO_SWITCH2_JOYCON_RIGHT:
+        if (ctx->device->parent) {
+            SDL_PrivateJoystickAddSensor(joystick, SDL_SENSOR_GYRO, 250.0f);
+            SDL_PrivateJoystickAddSensor(joystick, SDL_SENSOR_ACCEL, 250.0f);
+            SDL_PrivateJoystickAddSensor(joystick, SDL_SENSOR_GYRO_R, 250.0f);
+            SDL_PrivateJoystickAddSensor(joystick, SDL_SENSOR_ACCEL_R, 250.0f);
+        }
         joystick->nbuttons = SDL_GAMEPAD_NUM_SWITCH2_JOYCON_BUTTONS;
         break;
     case USB_PRODUCT_NINTENDO_SWITCH2_PRO:
@@ -568,6 +610,9 @@ static bool HIDAPI_DriverSwitch2_OpenJoystick(SDL_HIDAPI_Device *device, SDL_Joy
     }
     joystick->naxes = SDL_GAMEPAD_AXIS_COUNT;
     joystick->nhats = 1;
+
+    ctx->rumble_hi_freq = 0x187;
+    ctx->rumble_lo_freq = 0x112;
 
     // Set up for vertical mode
     ctx->vertical_mode = SDL_GetHintBoolean(SDL_HINT_JOYSTICK_HIDAPI_VERTICAL_JOY_CONS, false);
@@ -616,7 +661,24 @@ static bool HIDAPI_DriverSwitch2_SendJoystickEffect(SDL_HIDAPI_Device *device, S
 
 static bool HIDAPI_DriverSwitch2_SetJoystickSensorsEnabled(SDL_HIDAPI_Device *device, SDL_Joystick *joystick, bool enabled)
 {
-    return SDL_Unsupported();
+    SDL_DriverSwitch2_Context *ctx = (SDL_DriverSwitch2_Context *)device->context;
+    if (ctx->sensors_ready) {
+        Uint8 data[] = {
+                0x0c, 0x91, 0x00, 0x04, 0x00, 0x04, 0x00, 0x00, 0x23, 0x00, 0x00, 0x00
+        };
+        unsigned char reply[12] = {0};
+
+        if (enabled) {
+            data[8] |= 4;
+        }
+        int res = SendBulkData(ctx, data, sizeof(data));
+        if (res < 0) {
+            return SDL_SetError("Couldn't set sensors enabled: %d\n", res);
+        }
+        RecvBulkData(ctx, reply, sizeof(reply));
+    }
+    ctx->sensors_enabled = true;
+    return true;
 }
 
 static void HandleGameCubeState(Uint64 timestamp, SDL_Joystick *joystick, SDL_DriverSwitch2_Context *ctx, Uint8 *data, int size)
@@ -710,8 +772,6 @@ static void HandleGameCubeState(Uint64 timestamp, SDL_Joystick *joystick, SDL_Dr
 
 static void HandleCombinedControllerStateL(Uint64 timestamp, SDL_Joystick *joystick, SDL_DriverSwitch2_Context *ctx, Uint8 *data, int size)
 {
-    // FIXME: When we find out what the SL and SR buttons are, map them to paddles
-
     if (data[6] != ctx->last_state[6]) {
         SDL_SendJoystickButton(timestamp, joystick, SDL_GAMEPAD_BUTTON_BACK, ((data[6] & 0x01) != 0));
         SDL_SendJoystickButton(timestamp, joystick, SDL_GAMEPAD_BUTTON_LEFT_STICK, ((data[6] & 0x08) != 0));
@@ -765,8 +825,6 @@ static void HandleCombinedControllerStateL(Uint64 timestamp, SDL_Joystick *joyst
 
 static void HandleMiniControllerStateL(Uint64 timestamp, SDL_Joystick *joystick, SDL_DriverSwitch2_Context *ctx, Uint8 *data, int size)
 {
-    // FIXME: When we find out what the SL and SR buttons are, map them to shoulder buttons
-
     if (data[6] != ctx->last_state[6]) {
         SDL_SendJoystickButton(timestamp, joystick, SDL_GAMEPAD_BUTTON_START, ((data[6] & 0x01) != 0));
         SDL_SendJoystickButton(timestamp, joystick, SDL_GAMEPAD_BUTTON_LEFT_STICK, ((data[6] & 0x08) != 0));
@@ -779,6 +837,8 @@ static void HandleMiniControllerStateL(Uint64 timestamp, SDL_Joystick *joystick,
         SDL_SendJoystickButton(timestamp, joystick, SDL_GAMEPAD_BUTTON_NORTH, ((data[7] & 0x02) != 0));
         SDL_SendJoystickButton(timestamp, joystick, SDL_GAMEPAD_BUTTON_SOUTH, ((data[7] & 0x04) != 0));
         SDL_SendJoystickButton(timestamp, joystick, SDL_GAMEPAD_BUTTON_EAST, ((data[7] & 0x08) != 0));
+        SDL_SendJoystickButton(timestamp, joystick, SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER, ((data[7] & 0x10) != 0));
+        SDL_SendJoystickButton(timestamp, joystick, SDL_GAMEPAD_BUTTON_LEFT_SHOULDER, ((data[7] & 0x20) != 0));
         SDL_SendJoystickButton(timestamp, joystick, SDL_GAMEPAD_BUTTON_SWITCH2_JOYCON_LEFT_PADDLE1, ((data[7] & 0x40) != 0));
         SDL_SendJoystickButton(timestamp, joystick, SDL_GAMEPAD_BUTTON_SWITCH2_JOYCON_LEFT_PADDLE2, ((data[7] & 0x80) != 0));
     }
@@ -803,8 +863,6 @@ static void HandleMiniControllerStateL(Uint64 timestamp, SDL_Joystick *joystick,
 
 static void HandleCombinedControllerStateR(Uint64 timestamp, SDL_Joystick *joystick, SDL_DriverSwitch2_Context *ctx, Uint8 *data, int size)
 {
-    // FIXME: When we find out what the SL and SR buttons are, map them to paddles
-
     if (data[5] != ctx->last_state[5]) {
         SDL_SendJoystickButton(timestamp, joystick, SDL_GAMEPAD_BUTTON_WEST, ((data[5] & 0x01) != 0));
         SDL_SendJoystickButton(timestamp, joystick, SDL_GAMEPAD_BUTTON_NORTH, ((data[5] & 0x02) != 0));
@@ -847,13 +905,13 @@ static void HandleCombinedControllerStateR(Uint64 timestamp, SDL_Joystick *joyst
 
 static void HandleMiniControllerStateR(Uint64 timestamp, SDL_Joystick *joystick, SDL_DriverSwitch2_Context *ctx, Uint8 *data, int size)
 {
-    // FIXME: When we find out what the SL and SR buttons are, map them to shoulder buttons
-
     if (data[5] != ctx->last_state[5]) {
         SDL_SendJoystickButton(timestamp, joystick, SDL_GAMEPAD_BUTTON_WEST, ((data[5] & 0x01) != 0));
         SDL_SendJoystickButton(timestamp, joystick, SDL_GAMEPAD_BUTTON_NORTH, ((data[5] & 0x02) != 0));
         SDL_SendJoystickButton(timestamp, joystick, SDL_GAMEPAD_BUTTON_SOUTH, ((data[5] & 0x04) != 0));
         SDL_SendJoystickButton(timestamp, joystick, SDL_GAMEPAD_BUTTON_EAST, ((data[5] & 0x08) != 0));
+        SDL_SendJoystickButton(timestamp, joystick, SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER, ((data[5] & 0x10) != 0));
+        SDL_SendJoystickButton(timestamp, joystick, SDL_GAMEPAD_BUTTON_LEFT_SHOULDER, ((data[5] & 0x20) != 0));
         SDL_SendJoystickButton(timestamp, joystick, SDL_GAMEPAD_BUTTON_SWITCH2_JOYCON_RIGHT_PADDLE1, ((data[5] & 0x40) != 0));
         SDL_SendJoystickButton(timestamp, joystick, SDL_GAMEPAD_BUTTON_SWITCH2_JOYCON_RIGHT_PADDLE2, ((data[5] & 0x80) != 0));
     }
@@ -970,6 +1028,15 @@ static void HandleSwitchProState(Uint64 timestamp, SDL_Joystick *joystick, SDL_D
     );
 }
 
+static void EncodeHDRumble(Uint16 high_freq, Uint16 high_amp, Uint16 low_freq, Uint16 low_amp, Uint8 rumble_data[5])
+{
+    rumble_data[0] = (Uint8)(high_freq & 0xFF);
+    rumble_data[1] = (Uint8)(((high_amp >> 4) & 0xfc) | ((high_freq >> 8) & 0x03));
+    rumble_data[2] = (Uint8)((high_amp >> 12) | (low_freq << 4));
+    rumble_data[3] = (Uint8)((low_amp & 0xc0) | ((low_freq >> 4) & 0x3f));
+    rumble_data[4] = (Uint8)(low_amp >> 8);
+}
+
 static bool UpdateRumble(SDL_DriverSwitch2_Context *ctx)
 {
     if (!ctx->rumble_updated && !ctx->rumble_lo_amp && !ctx->rumble_hi_amp) {
@@ -1007,14 +1074,10 @@ static bool UpdateRumble(SDL_DriverSwitch2_Context *ctx)
     } else {
         // Rumble can get so strong that it might be dangerous to the controller...
         // This is a game controller, not a massage device, so let's clamp it somewhat
-        int low_amp = ctx->rumble_lo_amp * RUMBLE_MAX / UINT16_MAX;
-        int high_amp = ctx->rumble_hi_amp * RUMBLE_MAX / UINT16_MAX;
+        Uint16 low_amp = (Uint16)((int)ctx->rumble_lo_amp * RUMBLE_MAX / UINT16_MAX);
+        Uint16 high_amp = (Uint16)((int)ctx->rumble_hi_amp * RUMBLE_MAX / UINT16_MAX);
         rumble_data[0x01] = 0x50 | (ctx->rumble_seq & 0xf);
-        rumble_data[0x02] = 0x87;
-        rumble_data[0x03] = ((high_amp >> 4) & 0xfc) | 1;
-        rumble_data[0x04] = (high_amp >> 12) | 0x20;
-        rumble_data[0x05] = (low_amp & 0xc0) | 0x11;
-        rumble_data[0x06] = low_amp >> 8;
+        EncodeHDRumble(ctx->rumble_hi_freq, high_amp, ctx->rumble_lo_freq, low_amp, &rumble_data[0x02]);
         switch (ctx->device->product_id) {
         case USB_PRODUCT_NINTENDO_SWITCH2_JOYCON_LEFT:
         case USB_PRODUCT_NINTENDO_SWITCH2_JOYCON_RIGHT:
@@ -1080,6 +1143,101 @@ static void HIDAPI_DriverSwitch2_HandleStatePacket(SDL_HIDAPI_Device *device, SD
     default:
         // FIXME: Need state handling implementation
         break;
+    }
+
+    Uint64 sensor_timestamp = (Uint32) (data[0x2b] | (data[0x2c] << 8U) | (data[0x2d] << 16U) | (data[0x2e] << 24U));
+    if (sensor_timestamp && !ctx->sensors_ready) {
+        ctx->sample_count++;
+        if (ctx->sample_count >= 5 && !ctx->first_sensor_timestamp) {
+            ctx->first_sensor_timestamp = sensor_timestamp;
+            ctx->sample_count = 0;
+        } else if (ctx->sample_count == 100) {
+            // Calculate timestamp coefficient
+            // Timestamp are normally microseconds but sometimes it's something else for no apparent reason
+            Uint64 coeff = 1000 * (sensor_timestamp - ctx->first_sensor_timestamp) / (ctx->sample_count * 4);
+            if ((coeff + 100000) / 200000 == 5) {
+                // Within 10% of 1000
+                ctx->sensor_ts_coeff = 10000;
+                ctx->gyro_coeff = 34.8f;
+                ctx->sensors_ready = true;
+            } else if (coeff != 0) {
+                ctx->sensor_ts_coeff = 10000000000 / coeff;
+                ctx->gyro_coeff = 40.0f;
+                ctx->sensors_ready = true;
+            } else {
+                // Didn't get a valid reading, try again
+                ctx->first_sensor_timestamp = 0;
+                ctx->sample_count = 0;
+            }
+
+            if (ctx->sensors_ready && !ctx->sensors_enabled) {
+                Uint8 set_features[] = {
+                        0x0c, 0x91, 0x00, 0x04, 0x00, 0x04, 0x00, 0x00, 0x23, 0x00, 0x00, 0x00
+                };
+                unsigned char reply[12] = {0};
+
+                SendBulkData(ctx, set_features, sizeof(set_features));
+                RecvBulkData(ctx, reply, sizeof(reply));
+            }
+        }
+    }
+    if (ctx->sensors_enabled && sensor_timestamp && ctx->sensors_ready) {
+        sensor_timestamp = sensor_timestamp * ctx->sensor_ts_coeff / 10;
+        float accel_data[3];
+        float gyro_data[3];
+        const float g = 9.80665f;
+        const float accel_scale = g * 8.f / INT16_MAX;
+
+        accel_data[0] = (Sint16)(data[0x31] | (data[0x32] << 8)) * accel_scale;
+        accel_data[1] = (Sint16)(data[0x35] | (data[0x36] << 8)) * accel_scale;
+        accel_data[2] = (Sint16)(data[0x33] | (data[0x34] << 8)) * -accel_scale;
+
+        gyro_data[0] = (Sint16)(data[0x37] | (data[0x38] << 8)) * ctx->gyro_coeff / INT16_MAX - ctx->gyro_bias_x;
+        gyro_data[1] = (Sint16)(data[0x3b] | (data[0x3c] << 8)) * ctx->gyro_coeff / INT16_MAX - ctx->gyro_bias_z;
+        gyro_data[2] = (Sint16)(data[0x39] | (data[0x3a] << 8)) * -ctx->gyro_coeff / INT16_MAX + ctx->gyro_bias_y;
+
+        switch (ctx->device->product_id) {
+        case USB_PRODUCT_NINTENDO_SWITCH2_JOYCON_LEFT:
+            if (ctx->device->parent) {
+                SDL_SendJoystickSensor(timestamp, joystick, SDL_SENSOR_GYRO_L, sensor_timestamp, gyro_data, 3);
+                SDL_SendJoystickSensor(timestamp, joystick, SDL_SENSOR_ACCEL_L, sensor_timestamp, accel_data, 3);
+            } else {
+                float tmp = -accel_data[0];
+                accel_data[0] = accel_data[2];
+                accel_data[2] = tmp;
+
+                tmp = -gyro_data[0];
+                gyro_data[0] = gyro_data[2];
+                gyro_data[2] = tmp;
+
+                SDL_SendJoystickSensor(timestamp, joystick, SDL_SENSOR_GYRO, sensor_timestamp, gyro_data, 3);
+                SDL_SendJoystickSensor(timestamp, joystick, SDL_SENSOR_ACCEL, sensor_timestamp, accel_data, 3);
+            }
+            break;
+        case USB_PRODUCT_NINTENDO_SWITCH2_JOYCON_RIGHT:
+            if (ctx->device->parent) {
+                SDL_SendJoystickSensor(timestamp, joystick, SDL_SENSOR_GYRO, sensor_timestamp, gyro_data, 3);
+                SDL_SendJoystickSensor(timestamp, joystick, SDL_SENSOR_ACCEL, sensor_timestamp, accel_data, 3);
+                SDL_SendJoystickSensor(timestamp, joystick, SDL_SENSOR_GYRO_R, sensor_timestamp, gyro_data, 3);
+                SDL_SendJoystickSensor(timestamp, joystick, SDL_SENSOR_ACCEL_R, sensor_timestamp, accel_data, 3);
+            } else {
+                float tmp = accel_data[0];
+                accel_data[0] = -accel_data[2];
+                accel_data[2] = tmp;
+
+                tmp = gyro_data[0];
+                gyro_data[0] = -gyro_data[2];
+                gyro_data[2] = tmp;
+
+                SDL_SendJoystickSensor(timestamp, joystick, SDL_SENSOR_GYRO, sensor_timestamp, gyro_data, 3);
+                SDL_SendJoystickSensor(timestamp, joystick, SDL_SENSOR_ACCEL, sensor_timestamp, accel_data, 3);
+            }
+            break;
+        default:
+            SDL_SendJoystickSensor(timestamp, joystick, SDL_SENSOR_GYRO, sensor_timestamp, gyro_data, 3);
+            SDL_SendJoystickSensor(timestamp, joystick, SDL_SENSOR_ACCEL, sensor_timestamp, accel_data, 3);
+            break;
+        }
     }
 
     SDL_memcpy(ctx->last_state, data, SDL_min(size, sizeof(ctx->last_state)));

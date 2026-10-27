@@ -1,6 +1,6 @@
 /*
   Simple DirectMedia Layer
-  Copyright (C) 1997-2025 Sam Lantinga <slouken@libsdl.org>
+  Copyright (C) 1997-2026 Sam Lantinga <slouken@libsdl.org>
 
   This software is provided 'as-is', without any express or implied
   warranty.  In no event will the authors be held liable for any damages
@@ -24,6 +24,7 @@
 
 #include "SDL_windowsvideo.h"
 #include "../../events/SDL_displayevents_c.h"
+#include "../SDL_pixels_c.h"
 
 #ifdef HAVE_DXGI1_6_H
 #define COBJMACROS
@@ -546,7 +547,7 @@ static void WIN_GetHDRProperties(SDL_VideoDevice *_this, HMONITOR hMonitor, SDL_
     if (WIN_GetMonitorDESC1(hMonitor, &desc)) {
         if (desc.ColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020) {
             HDR->SDR_white_level = WIN_GetSDRWhitePoint(_this, hMonitor);
-            HDR->HDR_headroom = (desc.MaxLuminance / 80.0f) / HDR->SDR_white_level;
+            HDR->HDR_headroom = (desc.MaxLuminance / SCRGB_NITS) / HDR->SDR_white_level;
         }
     }
 }
@@ -605,6 +606,9 @@ static void WIN_AddDisplay(SDL_VideoDevice *_this, HMONITOR hMonitor, const MONI
             internal->MonitorHandle = hMonitor;
             internal->state = DisplayUnchanged;
 
+            SDL_PropertiesID props = SDL_GetDisplayProperties(_this->displays[i]->id);
+            SDL_SetPointerProperty(props, SDL_PROP_DISPLAY_WINDOWS_HMONITOR_POINTER, hMonitor);
+
             if (!_this->setting_display_mode) {
                 SDL_VideoDisplay *existing_display = _this->displays[i];
                 SDL_Rect bounds;
@@ -662,9 +666,13 @@ static void WIN_AddDisplay(SDL_VideoDevice *_this, HMONITOR hMonitor, const MONI
 #ifdef HAVE_DXGI1_6_H
     WIN_GetHDRProperties(_this, hMonitor, &display.HDR);
 #endif
-    if (SDL_AddVideoDisplay(&display, false)) {
+    SDL_DisplayID displayID = SDL_AddVideoDisplay(&display, false);
+    if (displayID) {
         // The mode is owned by the video subsystem
         mode.internal = NULL;
+
+        SDL_PropertiesID props = SDL_GetDisplayProperties(displayID);
+        SDL_SetPointerProperty(props, SDL_PROP_DISPLAY_WINDOWS_HMONITOR_POINTER, hMonitor);
     } else {
         SDL_free(displaydata);
     }

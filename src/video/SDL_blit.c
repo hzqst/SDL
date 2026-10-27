@@ -1,6 +1,6 @@
 /*
   Simple DirectMedia Layer
-  Copyright (C) 1997-2025 Sam Lantinga <slouken@libsdl.org>
+  Copyright (C) 1997-2026 Sam Lantinga <slouken@libsdl.org>
 
   This software is provided 'as-is', without any express or implied
   warranty.  In no event will the authors be held liable for any damages
@@ -64,17 +64,26 @@ static bool SDLCALL SDL_SoftBlit(SDL_Surface *src, const SDL_Rect *srcrect,
         SDL_BlitInfo *info = &src->map.info;
 
         // Set up the blit information
-        info->src = (Uint8 *)src->pixels +
-                    (Uint16)srcrect->y * src->pitch +
-                    (Uint16)srcrect->x * info->src_fmt->bytes_per_pixel;
+        if (info->src_fmt->bits_per_pixel >= 8) {
+            info->src = (Uint8 *)src->pixels +
+                        srcrect->y * src->pitch +
+                        srcrect->x * info->src_fmt->bytes_per_pixel;
+        } else {
+            info->src = (Uint8 *)src->pixels +
+                        srcrect->y * src->pitch +
+                        (srcrect->x * info->src_fmt->bits_per_pixel) / 8;
+            info->leading_skip =
+                        ((srcrect->x * info->src_fmt->bits_per_pixel) % 8) /
+                        info->src_fmt->bits_per_pixel;
+        }
         info->src_w = srcrect->w;
         info->src_h = srcrect->h;
         info->src_pitch = src->pitch;
         info->src_skip =
             info->src_pitch - info->src_w * info->src_fmt->bytes_per_pixel;
-        info->dst =
-            (Uint8 *)dst->pixels + (Uint16)dstrect->y * dst->pitch +
-            (Uint16)dstrect->x * info->dst_fmt->bytes_per_pixel;
+        info->dst = (Uint8 *)dst->pixels +
+                    dstrect->y * dst->pitch +
+                    dstrect->x * info->dst_fmt->bytes_per_pixel;
         info->dst_w = dstrect->w;
         info->dst_h = dstrect->h;
         info->dst_pitch = dst->pitch;
@@ -99,55 +108,10 @@ static bool SDLCALL SDL_SoftBlit(SDL_Surface *src, const SDL_Rect *srcrect,
 
 #ifdef SDL_HAVE_BLIT_AUTO
 
-#ifdef SDL_PLATFORM_MACOS
-#include <sys/sysctl.h>
-
-static bool SDL_UseAltivecPrefetch(void)
-{
-    const char key[] = "hw.l3cachesize";
-    u_int64_t result = 0;
-    size_t typeSize = sizeof(result);
-
-    if (sysctlbyname(key, &result, &typeSize, NULL, 0) == 0 && result > 0) {
-        return true;
-    } else {
-        return false;
-    }
-}
-#else
-static bool SDL_UseAltivecPrefetch(void)
-{
-    // Just guess G4
-    return true;
-}
-#endif // SDL_PLATFORM_MACOS
-
 static SDL_BlitFunc SDL_ChooseBlitFunc(SDL_PixelFormat src_format, SDL_PixelFormat dst_format, int flags,
                                        SDL_BlitFuncEntry *entries)
 {
     int i, flagcheck = (flags & (SDL_COPY_MODULATE_MASK | SDL_COPY_BLEND_MASK | SDL_COPY_COLORKEY | SDL_COPY_NEAREST));
-    static unsigned int features = 0x7fffffff;
-
-    // Get the available CPU features
-    if (features == 0x7fffffff) {
-        features = SDL_CPU_ANY;
-        if (SDL_HasMMX()) {
-            features |= SDL_CPU_MMX;
-        }
-        if (SDL_HasSSE()) {
-            features |= SDL_CPU_SSE;
-        }
-        if (SDL_HasSSE2()) {
-            features |= SDL_CPU_SSE2;
-        }
-        if (SDL_HasAltiVec()) {
-            if (SDL_UseAltivecPrefetch()) {
-                features |= SDL_CPU_ALTIVEC_PREFETCH;
-            } else {
-                features |= SDL_CPU_ALTIVEC_NOPREFETCH;
-            }
-        }
-    }
 
     for (i = 0; entries[i].func; ++i) {
         // Check for matching pixel formats
@@ -160,11 +124,6 @@ static SDL_BlitFunc SDL_ChooseBlitFunc(SDL_PixelFormat src_format, SDL_PixelForm
 
         // Check flags
         if ((flagcheck & entries[i].flags) != flagcheck) {
-            continue;
-        }
-
-        // Check CPU features
-        if ((entries[i].cpu & features) != entries[i].cpu) {
             continue;
         }
 
@@ -189,12 +148,8 @@ bool SDL_CalculateBlit(SDL_Surface *surface, SDL_Surface *dst)
         return SDL_SetError("Blit combination not supported");
     }
 
-#ifdef SDL_HAVE_RLE
-    // Clean everything out to start
-    if (surface->internal_flags & SDL_INTERNAL_SURFACE_RLEACCEL) {
-        SDL_UnRLESurface(surface, true);
-    }
-#endif
+    // We should have cleared out RLE at this point
+    SDL_assert(!(surface->internal_flags & SDL_INTERNAL_SURFACE_RLEACCEL));
 
     map->blit = SDL_SoftBlit;
     map->info.src_surface = surface;

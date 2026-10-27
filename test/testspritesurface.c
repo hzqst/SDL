@@ -1,5 +1,5 @@
 /*
-  Copyright (C) 1997-2025 Sam Lantinga <slouken@libsdl.org>
+  Copyright (C) 1997-2026 Sam Lantinga <slouken@libsdl.org>
 
   This software is provided 'as-is', without any express or implied
   warranty.  In no event will the authors be held liable for any damages
@@ -40,9 +40,6 @@ static SDL_Surface *CreateSurface(unsigned char *data, unsigned int len, int *w,
     if (src) {
         surface = SDL_LoadPNG_IO(src, true);
         if (surface) {
-            /* Treat white as transparent */
-            SDL_SetSurfaceColorKey(surface, true, SDL_MapSurfaceRGB(surface, 255, 255, 255));
-
             *w = surface->w;
             *h = surface->h;
         }

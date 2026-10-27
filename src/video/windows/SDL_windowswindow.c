@@ -1,6 +1,6 @@
 /*
   Simple DirectMedia Layer
-  Copyright (C) 1997-2025 Sam Lantinga <slouken@libsdl.org>
+  Copyright (C) 1997-2026 Sam Lantinga <slouken@libsdl.org>
 
   This software is provided 'as-is', without any express or implied
   warranty.  In no event will the authors be held liable for any damages
@@ -325,7 +325,7 @@ bool WIN_SetWindowPositionInternal(SDL_Window *window, UINT flags, SDL_WindowRec
 
     WIN_AdjustWindowRect(window, &x, &y, &w, &h, rect_type);
 
-    data->expected_resize = true;
+    data->expected_resize = !(flags & SWP_NOSIZE);
     if (SetWindowPos(hwnd, top, x, y, w, h, flags) == 0) {
         result = WIN_SetError("SetWindowPos()");
     }
@@ -425,21 +425,22 @@ static bool SetupWindowData(SDL_VideoDevice *_this, SDL_Window *window, HWND hwn
     window->internal = data;
 
     // Set up the window proc function
+    if (window->flags & SDL_WINDOW_EXTERNAL) {
 #ifdef GWLP_WNDPROC
-    data->wndproc = (WNDPROC)GetWindowLongPtr(hwnd, GWLP_WNDPROC);
-    if (data->wndproc == WIN_WindowProc) {
-        data->wndproc = NULL;
-    } else {
-        SetWindowLongPtr(hwnd, GWLP_WNDPROC, (LONG_PTR)WIN_WindowProc);
-    }
+        data->wndproc = (WNDPROC)GetWindowLongPtr(hwnd, GWLP_WNDPROC);
+        if (data->wndproc != WIN_WindowProc) {
+            SetWindowLongPtr(hwnd, GWLP_WNDPROC, (LONG_PTR)WIN_WindowProc);
+        }
 #else
-    data->wndproc = (WNDPROC)GetWindowLong(hwnd, GWL_WNDPROC);
-    if (data->wndproc == WIN_WindowProc) {
-        data->wndproc = NULL;
-    } else {
-        SetWindowLong(hwnd, GWL_WNDPROC, (LONG_PTR)WIN_WindowProc);
-    }
+        data->wndproc = (WNDPROC)GetWindowLong(hwnd, GWL_WNDPROC);
+        if (data->wndproc != WIN_WindowProc) {
+            SetWindowLong(hwnd, GWL_WNDPROC, (LONG_PTR)WIN_WindowProc);
+        }
 #endif
+    } else {
+        // We set up our window proc function at window creation.
+        // If someone has set hooks to modify it, leave it alone.
+    }
 
     // Fill in the SDL window with the window state
     {
@@ -584,7 +585,6 @@ static void CleanupWindowData(SDL_VideoDevice *_this, SDL_Window *window)
     SDL_WindowData *data = window->internal;
 
     if (data) {
-
 #if !defined(SDL_PLATFORM_XBOXONE) && !defined(SDL_PLATFORM_XBOXSERIES)
         if (data->drop_target) {
             WIN_AcceptDragAndDrop(window, false);
@@ -592,6 +592,9 @@ static void CleanupWindowData(SDL_VideoDevice *_this, SDL_Window *window)
         SDL_free(data->ICMFileName);
         if (data->keyboard_hook) {
             UnhookWindowsHookEx(data->keyboard_hook);
+        }
+        if (data->hicon) {
+            DestroyIcon(data->hicon);
         }
         ReleaseDC(data->hwnd, data->hdc);
         RemoveProp(data->hwnd, TEXT("SDL_WindowData"));
@@ -710,7 +713,7 @@ bool WIN_CreateWindow(SDL_VideoDevice *_this, SDL_Window *window, SDL_Properties
         }
 
         style |= GetWindowStyle(window);
-        styleEx |= GetWindowStyleEx(window);
+        styleEx |= (DWORD)SDL_GetNumberProperty(create_props, SDL_PROP_WINDOW_CREATE_WIN32_STYLE_EX_NUMBER, GetWindowStyleEx(window));
 
         // Figure out what the window area will be
         WIN_ConstrainPopup(window, false);
@@ -724,7 +727,7 @@ bool WIN_CreateWindow(SDL_VideoDevice *_this, SDL_Window *window, SDL_Properties
 
         WIN_UpdateDarkModeForHWND(hwnd);
 
-        WIN_PumpEvents(_this);
+        WIN_PumpEventsForHWND(_this, hwnd);
 
         if (!SetupWindowData(_this, window, hwnd, parent)) {
             DestroyWindow(hwnd);
@@ -839,7 +842,8 @@ void WIN_SetWindowTitle(SDL_VideoDevice *_this, SDL_Window *window)
 bool WIN_SetWindowIcon(SDL_VideoDevice *_this, SDL_Window *window, SDL_Surface *icon)
 {
 #if !defined(SDL_PLATFORM_XBOXONE) && !defined(SDL_PLATFORM_XBOXSERIES)
-    HWND hwnd = window->internal->hwnd;
+    SDL_WindowData *data = window->internal;
+    HWND hwnd = data->hwnd;
     HICON hicon = NULL;
     BYTE *icon_bmp;
     int icon_len, mask_len, row_len, y;
@@ -890,8 +894,13 @@ bool WIN_SetWindowIcon(SDL_VideoDevice *_this, SDL_Window *window, SDL_Surface *
     SDL_small_free(icon_bmp, isstack);
 
     if (!hicon) {
-        result = SDL_SetError("SetWindowIcon() failed, error %08X", (unsigned int)GetLastError());
+        return SDL_SetError("SetWindowIcon() failed, error %08X", (unsigned int)GetLastError());
     }
+
+    if (data->hicon) {
+        DestroyIcon(data->hicon);
+    }
+    data->hicon = hicon;
 
     // Set the icon for the window
     SendMessage(hwnd, WM_SETICON, ICON_SMALL, (LPARAM)hicon);
@@ -1218,7 +1227,7 @@ static void WIN_UpdateCornerRoundingForHWND(SDL_VideoDevice *_this, HWND hwnd, D
 {
 #if !defined(SDL_PLATFORM_XBOXONE) && !defined(SDL_PLATFORM_XBOXSERIES)
     SDL_VideoData *videodata = _this->internal;
-    if (videodata->DwmSetWindowAttribute) {
+    if (videodata->DwmSetWindowAttribute && WIN_IsWindows11OrGreater()) {
         videodata->DwmSetWindowAttribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, &cornerPref, sizeof(cornerPref));
     }
 #endif
@@ -1228,7 +1237,7 @@ static void WIN_UpdateBorderColorForHWND(SDL_VideoDevice *_this, HWND hwnd, COLO
 {
 #if !defined(SDL_PLATFORM_XBOXONE) && !defined(SDL_PLATFORM_XBOXSERIES)
     SDL_VideoData *videodata = _this->internal;
-    if (videodata->DwmSetWindowAttribute) {
+    if (videodata->DwmSetWindowAttribute && WIN_IsWindows11OrGreater()) {
         videodata->DwmSetWindowAttribute(hwnd, DWMWA_BORDER_COLOR, &colorRef, sizeof(colorRef));
     }
 #endif
@@ -1364,6 +1373,12 @@ SDL_FullscreenResult WIN_SetWindowFullscreen(SDL_VideoDevice *_this, SDL_Window 
 
     if (enterMaximized) {
         WIN_MaximizeWindow(_this, window);
+    }
+
+    if (!fullscreen && data && data->hicon) {
+        // Reset the icon for the window when returning from fullscreen mode
+        SendMessage(hwnd, WM_SETICON, ICON_SMALL, 0);
+        SendMessage(hwnd, WM_SETICON, ICON_SMALL, (LPARAM)data->hicon);
     }
 
 #ifdef HIGHDPI_DEBUG
@@ -1525,6 +1540,7 @@ void WIN_UnclipCursorForWindow(SDL_Window *window) {
 void WIN_UpdateClipCursor(SDL_Window *window)
 {
     SDL_WindowData *data = window->internal;
+    SDL_VideoData *videodata = data->videodata;
     if (data->in_title_click || data->focus_click_pending || data->postpone_clipcursor) {
         return;
     }
@@ -1609,6 +1625,41 @@ void WIN_UpdateClipCursor(SDL_Window *window)
             WIN_UnclipCursorForWindow(window);
             return;
         }
+    } else if (videodata->dpi_unaware_context_declared) {
+        /* Windows has a rounding bug when a DPI unaware context and fractional scale value
+         * are used that will cause the cursor coordinates to jitter across a confining edge
+         * while dragging along it, which can cause spurious pointer enter/leave events when the
+         * clip rect matches the window bounds. Move the sides of the clip rect in by 1 in each
+         * dimension to prevent rapid focus switching when the cursor is at the window edge.
+         *
+         * NOTE: Remove or bypass this if Microsoft ever fixes the issue.
+         */
+
+        // Temporarily set the thread to per-monitor awareness v2 to get the display DPI.
+        if (videodata->SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)) {
+            HMONITOR hmon = MonitorFromWindow(data->hwnd, MONITOR_DEFAULTTONEAREST);
+            if (hmon) {
+                UINT hdpi_uint, vdpi_uint;
+                if (videodata->GetDpiForMonitor(hmon, MDT_EFFECTIVE_DPI, &hdpi_uint, &vdpi_uint) == S_OK) {
+                    const float scale = (float)hdpi_uint / (float)USER_DEFAULT_SCREEN_DPI;
+                    if (scale != SDL_floorf(scale)) {
+                        if (target.left < target.right) {
+                            target.left += 1;
+                        }
+                        if (target.right > target.left) {
+                            target.right -= 1;
+                        }
+                        if (target.top < target.bottom) {
+                            target.top += 1;
+                        }
+                        if (target.bottom > target.top) {
+                            target.bottom -= 1;
+                        }
+                    }
+                }
+            }
+            videodata->SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_UNAWARE);
+        }
     }
 
     if (GetClipCursor(&client) &&
@@ -1632,8 +1683,6 @@ bool WIN_SetWindowOpacity(SDL_VideoDevice *_this, SDL_Window *window, float opac
     const SDL_WindowData *data = window->internal;
     HWND hwnd = data->hwnd;
     const LONG style = GetWindowLong(hwnd, GWL_EXSTYLE);
-
-    SDL_assert(style != 0);
 
     if (opacity == 1.0f) {
         // want it fully opaque, just mark it unlayered if necessary.
@@ -1756,16 +1805,16 @@ static STDMETHODIMP SDLDropTarget_DragEnter(SDLDropTarget *target,
                                             POINTL pt, DWORD *pdwEffect)
 {
     SDL_LogTrace(SDL_LOG_CATEGORY_INPUT,
-                 ". In DragEnter at %ld, %ld", pt.x, pt.y);
+                 ". In DragEnter at %" SDL_PRIdSLONG ", %" SDL_PRIdSLONG, pt.x, pt.y);
     *pdwEffect = DROPEFFECT_COPY;
     POINT pnt = { pt.x, pt.y };
     if (ScreenToClient(target->hwnd, &pnt)) {
         SDL_LogTrace(SDL_LOG_CATEGORY_INPUT,
-                     ". In DragEnter at %ld, %ld => window %u at %ld, %ld", pt.x, pt.y, target->window->id, pnt.x, pnt.y);
+                     ". In DragEnter at %" SDL_PRIdSLONG ", %" SDL_PRIdSLONG " => window %u at %" SDL_PRIdSLONG ", %" SDL_PRIdSLONG, pt.x, pt.y, target->window->id, pnt.x, pnt.y);
         SDL_SendDropPosition(target->window, pnt.x, pnt.y);
     } else {
         SDL_LogTrace(SDL_LOG_CATEGORY_INPUT,
-                     ". In DragEnter at %ld, %ld => nil, nil", pt.x, pt.y);
+                     ". In DragEnter at %" SDL_PRIdSLONG ", %" SDL_PRIdSLONG " => nil, nil", pt.x, pt.y);
     }
     return S_OK;
 }
@@ -1775,16 +1824,16 @@ static STDMETHODIMP SDLDropTarget_DragOver(SDLDropTarget *target,
                                            POINTL pt, DWORD *pdwEffect)
 {
     SDL_LogTrace(SDL_LOG_CATEGORY_INPUT,
-                 ". In DragOver at %ld, %ld", pt.x, pt.y);
+                 ". In DragOver at %" SDL_PRIdSLONG ", %" SDL_PRIdSLONG, pt.x, pt.y);
     *pdwEffect = DROPEFFECT_COPY;
     POINT pnt = { pt.x, pt.y };
     if (ScreenToClient(target->hwnd, &pnt)) {
         SDL_LogTrace(SDL_LOG_CATEGORY_INPUT,
-                     ". In DragOver at %ld, %ld => window %u at %ld, %ld", pt.x, pt.y, target->window->id, pnt.x, pnt.y);
+                     ". In DragOver at %" SDL_PRIdSLONG ", %" SDL_PRIdSLONG " => window %u at %" SDL_PRIdSLONG ", %" SDL_PRIdSLONG, pt.x, pt.y, target->window->id, pnt.x, pnt.y);
         SDL_SendDropPosition(target->window, pnt.x, pnt.y);
     } else {
         SDL_LogTrace(SDL_LOG_CATEGORY_INPUT,
-                     ". In DragOver at %ld, %ld => nil, nil", pt.x, pt.y);
+                     ". In DragOver at %" SDL_PRIdSLONG ", %" SDL_PRIdSLONG " => nil, nil", pt.x, pt.y);
     }
     return S_OK;
 }
@@ -1805,11 +1854,11 @@ static STDMETHODIMP SDLDropTarget_Drop(SDLDropTarget *target,
     POINT pnt = { pt.x, pt.y };
     if (ScreenToClient(target->hwnd, &pnt)) {
         SDL_LogTrace(SDL_LOG_CATEGORY_INPUT,
-                     ". In Drop at %ld, %ld => window %u at %ld, %ld", pt.x, pt.y, target->window->id, pnt.x, pnt.y);
+                     ". In Drop at %" SDL_PRIdSLONG ", %" SDL_PRIdSLONG " => window %u at %" SDL_PRIdSLONG ", %" SDL_PRIdSLONG, pt.x, pt.y, target->window->id, pnt.x, pnt.y);
         SDL_SendDropPosition(target->window, pnt.x, pnt.y);
     } else {
         SDL_LogTrace(SDL_LOG_CATEGORY_INPUT,
-                     ". In Drop at %ld, %ld => nil, nil", pt.x, pt.y);
+                     ". In Drop at %" SDL_PRIdSLONG ", %" SDL_PRIdSLONG " => nil, nil", pt.x, pt.y);
     }
 
     {
@@ -1817,7 +1866,7 @@ static STDMETHODIMP SDLDropTarget_Drop(SDLDropTarget *target,
         HRESULT hres;
         hres = pDataObject->lpVtbl->EnumFormatEtc(pDataObject, DATADIR_GET, &pEnumFormatEtc);
         SDL_LogTrace(SDL_LOG_CATEGORY_INPUT,
-                     ". In Drop for EnumFormatEtc, HRESULT is %08lx", hres);
+                     ". In Drop for EnumFormatEtc, HRESULT is %08" SDL_PRIxSLONG, hres);
         if (hres == S_OK) {
             FORMATETC fetc;
             while (pEnumFormatEtc->lpVtbl->Next(pEnumFormatEtc, 1, &fetc, NULL) == S_OK) {
@@ -1849,7 +1898,7 @@ static STDMETHODIMP SDLDropTarget_Drop(SDLDropTarget *target,
             STGMEDIUM med;
             HRESULT hres = pDataObject->lpVtbl->GetData(pDataObject, &fetc, &med);
             SDL_LogTrace(SDL_LOG_CATEGORY_INPUT,
-                         ". In Drop File for      GetData, format %08x '%s', HRESULT is %08lx",
+                         ". In Drop File for      GetData, format %08x '%s', HRESULT is %08" SDL_PRIxSLONG,
                          fetc.cfFormat, format_mime, hres);
             if (SUCCEEDED(hres)) {
                 const size_t bsize = GlobalSize(med.hGlobal);
@@ -1897,7 +1946,7 @@ static STDMETHODIMP SDLDropTarget_Drop(SDLDropTarget *target,
             STGMEDIUM med;
             HRESULT hres = pDataObject->lpVtbl->GetData(pDataObject, &fetc, &med);
             SDL_LogTrace(SDL_LOG_CATEGORY_INPUT,
-                         ". In Drop Text for      GetData, format %08x '%s', HRESULT is %08lx",
+                         ". In Drop Text for      GetData, format %08x '%s', HRESULT is %08" SDL_PRIxSLONG,
                          fetc.cfFormat, format_mime, hres);
             if (SUCCEEDED(hres)) {
                 const size_t bsize = GlobalSize(med.hGlobal);
@@ -1943,7 +1992,7 @@ static STDMETHODIMP SDLDropTarget_Drop(SDLDropTarget *target,
             STGMEDIUM med;
             HRESULT hres = pDataObject->lpVtbl->GetData(pDataObject, &fetc, &med);
             SDL_LogTrace(SDL_LOG_CATEGORY_INPUT,
-                         ". In Drop Text for      GetData, format %08x '%s', HRESULT is %08lx",
+                         ". In Drop Text for      GetData, format %08x '%s', HRESULT is %08" SDL_PRIxSLONG,
                          fetc.cfFormat, format_mime, hres);
             if (SUCCEEDED(hres)) {
                 const size_t bsize = GlobalSize(med.hGlobal);
@@ -1997,7 +2046,7 @@ static STDMETHODIMP SDLDropTarget_Drop(SDLDropTarget *target,
             STGMEDIUM med;
             HRESULT hres = pDataObject->lpVtbl->GetData(pDataObject, &fetc, &med);
             SDL_LogTrace(SDL_LOG_CATEGORY_INPUT,
-                         ". In Drop Text for      GetData, format %08x '%s', HRESULT is %08lx",
+                         ". In Drop Text for      GetData, format %08x '%s', HRESULT is %08" SDL_PRIxSLONG,
                          fetc.cfFormat, format_mime, hres);
             if (SUCCEEDED(hres)) {
                 const size_t bsize = GlobalSize(med.hGlobal);
@@ -2043,7 +2092,7 @@ static STDMETHODIMP SDLDropTarget_Drop(SDLDropTarget *target,
             STGMEDIUM med;
             HRESULT hres = pDataObject->lpVtbl->GetData(pDataObject, &fetc, &med);
             SDL_LogTrace(SDL_LOG_CATEGORY_INPUT,
-                         ". In Drop File for      GetData, format %08x '%s', HRESULT is %08lx",
+                         ". In Drop File for      GetData, format %08x '%s', HRESULT is %08" SDL_PRIxSLONG,
                          fetc.cfFormat, format_mime, hres);
             if (SUCCEEDED(hres)) {
                 const size_t bsize = GlobalSize(med.hGlobal);

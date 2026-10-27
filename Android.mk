@@ -39,6 +39,7 @@ LOCAL_SRC_FILES := \
 	$(wildcard $(LOCAL_PATH)/src/io/generic/*.c) \
 	$(wildcard $(LOCAL_PATH)/src/gpu/*.c) \
 	$(wildcard $(LOCAL_PATH)/src/gpu/vulkan/*.c) \
+	$(wildcard $(LOCAL_PATH)/src/gpu/xr/*.c) \
 	$(wildcard $(LOCAL_PATH)/src/haptic/*.c) \
 	$(wildcard $(LOCAL_PATH)/src/haptic/android/*.c) \
 	$(wildcard $(LOCAL_PATH)/src/haptic/dummy/*.c) \
@@ -58,6 +59,8 @@ LOCAL_SRC_FILES := \
 	$(wildcard $(LOCAL_PATH)/src/main/generic/*.c) \
 	$(wildcard $(LOCAL_PATH)/src/misc/*.c) \
 	$(wildcard $(LOCAL_PATH)/src/misc/android/*.c) \
+	$(wildcard $(LOCAL_PATH)/src/notification/*.c) \
+	$(wildcard $(LOCAL_PATH)/src/notification/dummy/*.c) \
 	$(wildcard $(LOCAL_PATH)/src/power/*.c) \
 	$(wildcard $(LOCAL_PATH)/src/power/android/*.c) \
 	$(wildcard $(LOCAL_PATH)/src/process/*.c) \
@@ -83,6 +86,7 @@ LOCAL_SRC_FILES := \
 	$(wildcard $(LOCAL_PATH)/src/tray/*.c) \
 	$(wildcard $(LOCAL_PATH)/src/video/*.c) \
 	$(wildcard $(LOCAL_PATH)/src/video/android/*.c) \
+	$(wildcard $(LOCAL_PATH)/src/video/arm/*.c) \
 	$(wildcard $(LOCAL_PATH)/src/video/yuv2rgb/*.c))
 
 LOCAL_CFLAGS += -DGL_GLEXT_PROTOTYPES
@@ -111,8 +115,6 @@ LOCAL_LDFLAGS := -Wl,--no-undefined -Wl,--no-undefined-version -Wl,--version-scr
 ifeq ($(NDK_DEBUG),1)
     cmd-strip :=
 endif
-
-LOCAL_STATIC_LIBRARIES := cpufeatures
 
 include $(BUILD_SHARED_LIBRARY)
 
@@ -145,4 +147,3 @@ LOCAL_EXPORT_LDLIBS :=
 
 include $(BUILD_STATIC_LIBRARY)
 
-$(call import-module,android/cpufeatures)

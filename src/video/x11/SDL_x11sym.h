@@ -1,6 +1,6 @@
 /*
   Simple DirectMedia Layer
-  Copyright (C) 1997-2025 Sam Lantinga <slouken@libsdl.org>
+  Copyright (C) 1997-2026 Sam Lantinga <slouken@libsdl.org>
 
   This software is provided 'as-is', without any express or implied
   warranty.  In no event will the authors be held liable for any damages
@@ -56,6 +56,7 @@ SDL_X11_SYM(int,XDeleteProperty,(Display* a,Window b,Atom c))
 SDL_X11_SYM(int,XDestroyWindow,(Display* a,Window b))
 SDL_X11_SYM(int,XDisplayKeycodes,(Display* a,int* b,int* c))
 SDL_X11_SYM(int,XDrawRectangle,(Display* a,Drawable b,GC c,int d,int e,unsigned int f,unsigned int g))
+SDL_X11_SYM(int,XFontsOfFontSet,(XFontSet a,XFontStruct ***b,char ***c))
 SDL_X11_SYM(int,XFillArc,(Display* a,Drawable b,GC c,int d,int e,unsigned int f,unsigned int g, int h, int i))
 SDL_X11_SYM(char*,XDisplayName,(_Xconst char* a))
 SDL_X11_SYM(int,XDrawString,(Display* a,Drawable b,GC c,int d,int e,_Xconst char* f,int g))
@@ -230,6 +231,9 @@ SDL_X11_SYM(void,XSetICFocus,(XIC a))
 SDL_X11_SYM(void,XUnsetICFocus,(XIC a))
 SDL_X11_SYM(XIM,XOpenIM,(Display* a,struct _XrmHashBucketRec* b,char* c,char* d))
 SDL_X11_SYM(Status,XCloseIM,(XIM a))
+SDL_X11_SYM(char*, XSetIMValues,(XIM,...))
+SDL_X11_SYM(Bool,XRegisterIMInstantiateCallback,(Display*,struct _XrmHashBucketRec*,char*,char*,XIDProc,XPointer))
+SDL_X11_SYM(Bool,XUnregisterIMInstantiateCallback,(Display*,struct _XrmHashBucketRec*,char*,char*,XIDProc,XPointer))
 SDL_X11_SYM(void,Xutf8DrawString,(Display *a, Drawable b, XFontSet c, GC d, int e, int f, _Xconst char *g, int h))
 SDL_X11_SYM(int,Xutf8TextExtents,(XFontSet a, _Xconst char* b, int c, XRectangle* d, XRectangle* e))
 SDL_X11_SYM(char*,XSetLocaleModifiers,(const char *a))

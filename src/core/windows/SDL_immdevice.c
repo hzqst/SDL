@@ -1,6 +1,6 @@
 /*
   Simple DirectMedia Layer
-  Copyright (C) 1997-2025 Sam Lantinga <slouken@libsdl.org>
+  Copyright (C) 1997-2026 Sam Lantinga <slouken@libsdl.org>
 
   This software is provided 'as-is', without any express or implied
   warranty.  In no event will the authors be held liable for any damages
@@ -54,9 +54,10 @@ static const IID SDL_IID_IMMEndpoint = { 0x1be09788, 0x6894, 0x4089,{ 0x85, 0x86
 static const PROPERTYKEY SDL_PKEY_Device_FriendlyName = { { 0xa45c254e, 0xdf1c, 0x4efd,{ 0x80, 0x20, 0x67, 0xd1, 0x46, 0xa8, 0x50, 0xe0, } }, 14 };
 static const PROPERTYKEY SDL_PKEY_AudioEngine_DeviceFormat = { { 0xf19f064d, 0x82c, 0x4e27,{ 0xbc, 0x73, 0x68, 0x82, 0xa1, 0xbb, 0x8e, 0x4c, } }, 0 };
 static const PROPERTYKEY SDL_PKEY_AudioEndpoint_GUID = { { 0x1da5d803, 0xd492, 0x4edd,{ 0x8c, 0x23, 0xe0, 0xc0, 0xff, 0xee, 0x7f, 0x0e, } }, 4 };
+static const PROPERTYKEY SDL_PKEY_AudioEndpoint_StableId = { { 0x1da5d803, 0xd492, 0x4edd,{ 0x8c, 0x23, 0xe0, 0xc0, 0xff, 0xee, 0x7f, 0x0e, } }, 12 };
 /* *INDENT-ON* */ // clang-format on
 
-static bool FindByDevIDCallback(SDL_AudioDevice *device, void *userdata)
+static bool FindByDevIDCallback(void *userdata, SDL_AudioDevice *device)
 {
     LPCWSTR devid = (LPCWSTR)userdata;
     if (devid && device && device->handle) {
@@ -83,13 +84,15 @@ LPCWSTR SDL_IMMDevice_GetDevID(SDL_AudioDevice *device)
     return (device && device->handle) ? ((const SDL_IMMDevice_HandleData *) device->handle)->immdevice_id : NULL;
 }
 
-static void GetMMDeviceInfo(IMMDevice *device, char **utf8dev, WAVEFORMATEXTENSIBLE *fmt, GUID *guid)
+static void GetMMDeviceInfo(IMMDevice *device, char **utf8dev, WAVEFORMATEXTENSIBLE *fmt, GUID *guid, char **unique_id)
 {
     /* PKEY_Device_FriendlyName gives you "Speakers (SoundBlaster Pro)" which drives me nuts. I'd rather it be
        "SoundBlaster Pro (Speakers)" but I guess that's developers vs users. Windows uses the FriendlyName in
        its own UIs, like Volume Control, etc. */
+    LPWSTR devid = NULL;
     IPropertyStore *props = NULL;
     *utf8dev = NULL;
+    *unique_id = NULL;
     SDL_zerop(fmt);
     if (SUCCEEDED(IMMDevice_OpenPropertyStore(device, STGM_READ, &props))) {
         PROPVARIANT var;
@@ -105,6 +108,15 @@ static void GetMMDeviceInfo(IMMDevice *device, char **utf8dev, WAVEFORMATEXTENSI
         if (SUCCEEDED(IPropertyStore_GetValue(props, &SDL_PKEY_AudioEndpoint_GUID, &var))) {
             (void)CLSIDFromString(var.pwszVal, guid);
         }
+
+        PropVariantClear(&var);
+        if (SUCCEEDED(IPropertyStore_GetValue(props, &SDL_PKEY_AudioEndpoint_StableId, &var)) && var.pwszVal) { // this was introduced in Windows 11, with stronger promises than IMMDevice_GetId().
+            *unique_id = WIN_StringToUTF8W(var.pwszVal);
+        } else if (SUCCEEDED(IMMDevice_GetId(device, &devid))) {
+            *unique_id = WIN_StringToUTF8W(devid);
+            CoTaskMemFree(devid);
+        }
+
         PropVariantClear(&var);
         IPropertyStore_Release(props);
     }
@@ -120,7 +132,7 @@ void SDL_IMMDevice_FreeDeviceHandle(SDL_AudioDevice *device)
     }
 }
 
-static SDL_AudioDevice *SDL_IMMDevice_Add(const bool recording, const char *devname, WAVEFORMATEXTENSIBLE *fmt, LPCWSTR devid, GUID *dsoundguid, SDL_AudioFormat force_format)
+static SDL_AudioDevice *SDL_IMMDevice_Add(const bool recording, const char *devname, WAVEFORMATEXTENSIBLE *fmt, LPCWSTR devid, GUID *dsoundguid, const char *unique_id, SDL_AudioFormat force_format, bool supports_recording_playback_devices)
 {
     /* You can have multiple endpoints on a device that are mutually exclusive ("Speakers" vs "Line Out" or whatever).
        In a perfect world, things that are unplugged won't be in this collection. The only gotcha is probably for
@@ -147,7 +159,7 @@ static SDL_AudioDevice *SDL_IMMDevice_Add(const bool recording, const char *devn
 
     if (!device) {
         // handle is freed by SDL_IMMDevice_FreeDeviceHandle!
-        SDL_IMMDevice_HandleData *handle = (SDL_IMMDevice_HandleData *)SDL_malloc(sizeof(SDL_IMMDevice_HandleData));
+        SDL_IMMDevice_HandleData *handle = (SDL_IMMDevice_HandleData *)SDL_calloc(1, sizeof(*handle));
         if (!handle) {
             return NULL;
         }
@@ -156,7 +168,7 @@ static SDL_AudioDevice *SDL_IMMDevice_Add(const bool recording, const char *devn
             SDL_free(handle);
             return NULL;
         }
-        SDL_memcpy(&handle->directsound_guid, dsoundguid, sizeof(GUID));
+        SDL_copyp(&handle->directsound_guid, dsoundguid);
 
         SDL_AudioSpec spec;
         SDL_zero(spec);
@@ -164,7 +176,29 @@ static SDL_AudioDevice *SDL_IMMDevice_Add(const bool recording, const char *devn
         spec.freq = fmt->Format.nSamplesPerSec;
         spec.format = (force_format != SDL_AUDIO_UNKNOWN) ? force_format : SDL_WaveFormatExToSDLFormat((WAVEFORMATEX *)fmt);
 
-        device = SDL_AddAudioDevice(recording, devname, &spec, handle);
+        device = SDL_AddAudioDevice(recording, devname, unique_id, &spec, handle);
+
+        if (!recording && supports_recording_playback_devices) {
+            // handle is freed by SDL_IMMDevice_FreeDeviceHandle!
+            SDL_IMMDevice_HandleData *recording_handle = (SDL_IMMDevice_HandleData *)SDL_malloc(sizeof(*recording_handle));
+            if (!recording_handle) {
+                return NULL;
+            }
+
+            recording_handle->immdevice_id = SDL_wcsdup(devid);
+            if (!recording_handle->immdevice_id) {
+                SDL_free(recording_handle);
+                return NULL;
+            }
+
+            SDL_copyp(&recording_handle->directsound_guid, dsoundguid);
+
+            if (!SDL_AddAudioDevice(true, devname, unique_id, &spec, recording_handle)) {
+                SDL_free(recording_handle->immdevice_id);
+                SDL_free(recording_handle);
+            }
+        }
+
         if (!device) {
             SDL_free(handle->immdevice_id);
             SDL_free(handle);
@@ -184,6 +218,7 @@ typedef struct SDLMMNotificationClient
     const IMMNotificationClientVtbl *lpVtbl;
     SDL_AtomicInt refcount;
     SDL_AudioFormat force_format;
+    bool supports_recording_playback_devices;
 } SDLMMNotificationClient;
 
 static HRESULT STDMETHODCALLTYPE SDLMMNotificationClient_QueryInterface(IMMNotificationClient *client, REFIID iid, void **ppv)
@@ -253,13 +288,15 @@ static HRESULT STDMETHODCALLTYPE SDLMMNotificationClient_OnDeviceStateChanged(IM
                 const bool recording = (flow == eCapture);
                 if (dwNewState == DEVICE_STATE_ACTIVE) {
                     char *utf8dev;
+                    char *unique_id;
                     WAVEFORMATEXTENSIBLE fmt;
                     GUID dsoundguid;
-                    GetMMDeviceInfo(device, &utf8dev, &fmt, &dsoundguid);
+                    GetMMDeviceInfo(device, &utf8dev, &fmt, &dsoundguid, &unique_id);
                     if (utf8dev) {
-                        SDL_IMMDevice_Add(recording, utf8dev, &fmt, pwstrDeviceId, &dsoundguid, client->force_format);
+                        SDL_IMMDevice_Add(recording, utf8dev, &fmt, pwstrDeviceId, &dsoundguid, unique_id, client->force_format, client->supports_recording_playback_devices);
                         SDL_free(utf8dev);
                     }
+                    SDL_free(unique_id);
                 } else {
                     immcallbacks.audio_device_disconnected(SDL_IMMDevice_FindByDevID(pwstrDeviceId));
                 }
@@ -288,7 +325,7 @@ static const IMMNotificationClientVtbl notification_client_vtbl = {
     SDLMMNotificationClient_OnPropertyValueChanged
 };
 
-static SDLMMNotificationClient notification_client = { &notification_client_vtbl, { 1 }, SDL_AUDIO_UNKNOWN };
+static SDLMMNotificationClient notification_client = { &notification_client_vtbl, { 1 }, SDL_AUDIO_UNKNOWN, false };
 
 bool SDL_IMMDevice_Init(const SDL_IMMDevice_callbacks *callbacks)
 {
@@ -365,7 +402,23 @@ bool SDL_IMMDevice_Get(SDL_AudioDevice *device, IMMDevice **immdevice, bool reco
     return true;
 }
 
-static void EnumerateEndpointsForFlow(const bool recording, SDL_AudioDevice **default_device, SDL_AudioFormat force_format)
+bool SDL_IMMDevice_GetIsCapture(IMMDevice *device)
+{
+    bool iscapture = false;
+    IMMEndpoint *endpoint = NULL;
+    if (SUCCEEDED(IMMDevice_QueryInterface(device, &SDL_IID_IMMEndpoint, (void **)&endpoint))) {
+        EDataFlow flow;
+
+        if (SUCCEEDED(IMMEndpoint_GetDataFlow(endpoint, &flow))) {
+            iscapture = (flow == eCapture);
+        }
+    }
+
+    IMMEndpoint_Release(endpoint);
+    return iscapture;
+}
+
+static void EnumerateEndpointsForFlow(const bool recording, SDL_AudioDevice **default_device, SDL_AudioFormat force_format, bool supports_recording_playback_devices)
 {
     /* Note that WASAPI separates "adapter devices" from "audio endpoint devices"
        ...one adapter device ("SoundBlaster Pro") might have multiple endpoint devices ("Speakers", "Line-Out"). */
@@ -401,18 +454,20 @@ static void EnumerateEndpointsForFlow(const bool recording, SDL_AudioDevice **de
             LPWSTR devid = NULL;
             if (SUCCEEDED(IMMDevice_GetId(immdevice, &devid))) {
                 char *devname = NULL;
+                char *unique_id = NULL;
                 WAVEFORMATEXTENSIBLE fmt;
                 GUID dsoundguid;
                 SDL_zero(fmt);
                 SDL_zero(dsoundguid);
-                GetMMDeviceInfo(immdevice, &devname, &fmt, &dsoundguid);
+                GetMMDeviceInfo(immdevice, &devname, &fmt, &dsoundguid, &unique_id);
                 if (devname) {
-                    SDL_AudioDevice *sdldevice = SDL_IMMDevice_Add(recording, devname, &fmt, devid, &dsoundguid, force_format);
+                    SDL_AudioDevice *sdldevice = SDL_IMMDevice_Add(recording, devname, &fmt, devid, &dsoundguid, unique_id, force_format, supports_recording_playback_devices);
                     if (default_device && default_devid && SDL_wcscmp(default_devid, devid) == 0) {
                         *default_device = sdldevice;
                     }
                     SDL_free(devname);
                 }
+                SDL_free(unique_id);
                 CoTaskMemFree(devid);
             }
             IMMDevice_Release(immdevice);
@@ -424,12 +479,13 @@ static void EnumerateEndpointsForFlow(const bool recording, SDL_AudioDevice **de
     IMMDeviceCollection_Release(collection);
 }
 
-void SDL_IMMDevice_EnumerateEndpoints(SDL_AudioDevice **default_playback, SDL_AudioDevice **default_recording, SDL_AudioFormat force_format)
+void SDL_IMMDevice_EnumerateEndpoints(SDL_AudioDevice **default_playback, SDL_AudioDevice **default_recording, SDL_AudioFormat force_format, bool supports_recording_playback_devices)
 {
-    EnumerateEndpointsForFlow(false, default_playback, force_format);
-    EnumerateEndpointsForFlow(true, default_recording, force_format);
+    EnumerateEndpointsForFlow(false, default_playback, force_format, supports_recording_playback_devices);
+    EnumerateEndpointsForFlow(true, default_recording, force_format, supports_recording_playback_devices);
 
     notification_client.force_format = force_format;
+    notification_client.supports_recording_playback_devices = supports_recording_playback_devices;
 
     // if this fails, we just won't get hotplug events. Carry on anyhow.
     IMMDeviceEnumerator_RegisterEndpointNotificationCallback(enumerator, (IMMNotificationClient *)&notification_client);

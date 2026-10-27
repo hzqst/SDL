@@ -1,6 +1,6 @@
 /*
   Simple DirectMedia Layer
-  Copyright (C) 1997-2025 Sam Lantinga <slouken@libsdl.org>
+  Copyright (C) 1997-2026 Sam Lantinga <slouken@libsdl.org>
 
   This software is provided 'as-is', without any express or implied
   warranty.  In no event will the authors be held liable for any damages
@@ -33,10 +33,6 @@
 #define SDL_WAYLAND_SYM_OPT(rc,fn,params)
 #endif
 
-#ifndef SDL_WAYLAND_INTERFACE
-#define SDL_WAYLAND_INTERFACE(iface)
-#endif
-
 SDL_WAYLAND_MODULE(WAYLAND_CLIENT)
 SDL_WAYLAND_SYM(void, wl_proxy_marshal, (struct wl_proxy *, uint32_t, ...))
 SDL_WAYLAND_SYM(struct wl_proxy *, wl_proxy_create, (struct wl_proxy *, const struct wl_interface *))
@@ -65,6 +61,7 @@ SDL_WAYLAND_SYM(void, wl_display_cancel_read, (struct wl_display *))
 SDL_WAYLAND_SYM(int, wl_display_get_error, (struct wl_display *))
 SDL_WAYLAND_SYM(int, wl_display_flush, (struct wl_display *))
 SDL_WAYLAND_SYM(int, wl_display_roundtrip, (struct wl_display *))
+SDL_WAYLAND_SYM(int, wl_display_roundtrip_queue, (struct wl_display *, struct wl_event_queue *))
 SDL_WAYLAND_SYM(struct wl_event_queue *, wl_display_create_queue, (struct wl_display *))
 SDL_WAYLAND_SYM(void, wl_event_queue_destroy, (struct wl_event_queue *))
 SDL_WAYLAND_SYM(void, wl_log_set_handler_client, (wl_log_func_t))
@@ -74,6 +71,10 @@ SDL_WAYLAND_SYM(void, wl_list_remove, (struct wl_list *))
 SDL_WAYLAND_SYM(int, wl_list_length, (const struct wl_list *))
 SDL_WAYLAND_SYM(int, wl_list_empty, (const struct wl_list *))
 SDL_WAYLAND_SYM(void, wl_list_insert_list, (struct wl_list *, struct wl_list *))
+SDL_WAYLAND_SYM(void, wl_array_init, (struct wl_array *))
+SDL_WAYLAND_SYM(void, wl_array_release, (struct wl_array *))
+SDL_WAYLAND_SYM(void *, wl_array_add, (struct wl_array *, size_t))
+SDL_WAYLAND_SYM(int, wl_array_copy, (struct wl_array *, struct wl_array *))
 SDL_WAYLAND_SYM(struct wl_proxy *, wl_proxy_marshal_constructor, (struct wl_proxy *, uint32_t opcode, const struct wl_interface *interface, ...))
 SDL_WAYLAND_SYM(struct wl_proxy *, wl_proxy_marshal_constructor_versioned, (struct wl_proxy *proxy, uint32_t opcode, const struct wl_interface *interface, uint32_t version, ...))
 SDL_WAYLAND_SYM(void, wl_proxy_set_tag, (struct wl_proxy *, const char * const *))
@@ -84,8 +85,12 @@ SDL_WAYLAND_SYM(const char * const *, wl_proxy_get_tag, (struct wl_proxy *))
  * non-optional when we are compiling against Wayland 1.20. We don't
  * explicitly call them ourselves, though, so if we are only compiling
  * against Wayland 1.18, they're unnecessary. */
-SDL_WAYLAND_SYM(struct wl_proxy *, wl_proxy_marshal_flags, (struct wl_proxy *proxy, uint32_t opcode, const struct wl_interface *interfac, uint32_t version, uint32_t flags, ...))
+SDL_WAYLAND_SYM(struct wl_proxy *, wl_proxy_marshal_flags, (struct wl_proxy *proxy, uint32_t opcode, const struct wl_interface *interface, uint32_t version, uint32_t flags, ...))
 SDL_WAYLAND_SYM(struct wl_proxy *, wl_proxy_marshal_array_flags, (struct wl_proxy *proxy, uint32_t opcode, const struct wl_interface *interface, uint32_t version,  uint32_t flags, union wl_argument *args))
+#endif
+
+#if SDL_WAYLAND_CHECK_VERSION(1, 23, 0) || defined(SDL_VIDEO_DRIVER_WAYLAND_DYNAMIC)
+SDL_WAYLAND_SYM_OPT(struct wl_event_queue *, wl_display_create_queue_with_name, (struct wl_display *display, const char *name))
 #endif
 
 #if 0 // TODO RECONNECT: See waylandvideo.c for more information!
@@ -93,22 +98,6 @@ SDL_WAYLAND_SYM(struct wl_proxy *, wl_proxy_marshal_array_flags, (struct wl_prox
 SDL_WAYLAND_SYM(int, wl_display_reconnect, (struct wl_display *))
 #endif
 #endif // 0
-
-SDL_WAYLAND_INTERFACE(wl_seat_interface)
-SDL_WAYLAND_INTERFACE(wl_surface_interface)
-SDL_WAYLAND_INTERFACE(wl_shm_pool_interface)
-SDL_WAYLAND_INTERFACE(wl_buffer_interface)
-SDL_WAYLAND_INTERFACE(wl_registry_interface)
-SDL_WAYLAND_INTERFACE(wl_region_interface)
-SDL_WAYLAND_INTERFACE(wl_pointer_interface)
-SDL_WAYLAND_INTERFACE(wl_keyboard_interface)
-SDL_WAYLAND_INTERFACE(wl_compositor_interface)
-SDL_WAYLAND_INTERFACE(wl_output_interface)
-SDL_WAYLAND_INTERFACE(wl_shm_interface)
-SDL_WAYLAND_INTERFACE(wl_data_device_interface)
-SDL_WAYLAND_INTERFACE(wl_data_source_interface)
-SDL_WAYLAND_INTERFACE(wl_data_offer_interface)
-SDL_WAYLAND_INTERFACE(wl_data_device_manager_interface)
 
 SDL_WAYLAND_MODULE(WAYLAND_EGL)
 SDL_WAYLAND_SYM(struct wl_egl_window *, wl_egl_window_create, (struct wl_surface *, int, int))
@@ -170,11 +159,19 @@ SDL_WAYLAND_SYM(xkb_mod_mask_t, xkb_keymap_mod_get_mask, (struct xkb_keymap *, c
 
 #ifdef HAVE_LIBDECOR_H
 SDL_WAYLAND_MODULE(WAYLAND_LIBDECOR)
+
+#if defined(SDL_VIDEO_DRIVER_WAYLAND_DYNAMIC_LIBDECOR) || SDL_LIBDECOR_CHECK_VERSION(0, 3, 0)
+#define SDL_libdecor_constsince03 const
+#else
+#define SDL_libdecor_constsince03 /* nothing */
+#endif
+
 SDL_WAYLAND_SYM(void, libdecor_unref, (struct libdecor *))
-SDL_WAYLAND_SYM(struct libdecor *, libdecor_new, (struct wl_display *, struct libdecor_interface *))
+SDL_WAYLAND_SYM(struct libdecor *, libdecor_new, (struct wl_display *,\
+                                                  SDL_libdecor_constsince03 struct libdecor_interface *))
 SDL_WAYLAND_SYM(struct libdecor_frame *, libdecor_decorate, (struct libdecor *,\
                                                              struct wl_surface *,\
-                                                             struct libdecor_frame_interface *,\
+                                                             SDL_libdecor_constsince03 struct libdecor_frame_interface *,\
                                                              void *))
 SDL_WAYLAND_SYM(void, libdecor_frame_unref, (struct libdecor_frame *))
 SDL_WAYLAND_SYM(void, libdecor_frame_set_title, (struct libdecor_frame *, const char *))
@@ -240,11 +237,12 @@ SDL_WAYLAND_SYM_OPT(void, libdecor_frame_get_max_content_size, (const struct lib
 SDL_WAYLAND_SYM_OPT(enum libdecor_wm_capabilities, libdecor_frame_get_wm_capabilities, (struct libdecor_frame *))
 #endif
 
+#undef SDL_libdecor_constsince03
+
 #endif
 
 #undef SDL_WAYLAND_MODULE
 #undef SDL_WAYLAND_SYM
 #undef SDL_WAYLAND_SYM_OPT
-#undef SDL_WAYLAND_INTERFACE
 
 /* *INDENT-ON* */ // clang-format on

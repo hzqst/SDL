@@ -1,5 +1,5 @@
 /*
-  Copyright (C) 1997-2025 Sam Lantinga <slouken@libsdl.org>
+  Copyright (C) 1997-2026 Sam Lantinga <slouken@libsdl.org>
 
   This software is provided 'as-is', without any express or implied
   warranty.  In no event will the authors be held liable for any damages
@@ -41,9 +41,6 @@ static SDL_Texture *CreateTexture(SDL_Renderer *r, unsigned char *data, unsigned
     if (src) {
         surface = SDL_LoadPNG_IO(src, true);
         if (surface) {
-            /* Treat white as transparent */
-            SDL_SetSurfaceColorKey(surface, true, SDL_MapSurfaceRGB(surface, 255, 255, 255));
-
             texture = SDL_CreateTextureFromSurface(r, surface);
             *w = surface->w;
             *h = surface->h;

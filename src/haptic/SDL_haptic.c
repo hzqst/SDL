@@ -1,6 +1,6 @@
 /*
   Simple DirectMedia Layer
-  Copyright (C) 1997-2025 Sam Lantinga <slouken@libsdl.org>
+  Copyright (C) 1997-2026 Sam Lantinga <slouken@libsdl.org>
 
   This software is provided 'as-is', without any express or implied
   warranty.  In no event will the authors be held liable for any damages
@@ -306,9 +306,9 @@ bool SDL_IsJoystickHaptic(SDL_Joystick *joystick)
 
     SDL_LockJoysticks();
     {
-        // Must be a valid joystick
+        // Must be a valid joystick, but not a gamepad unless running under sdl2-compat
         if (SDL_IsJoystickValid(joystick) &&
-            !SDL_IsGamepad(SDL_GetJoystickID(joystick))) {
+            (SDL_GetHintBoolean("SDL2_COMPAT", false) || !SDL_IsGamepad(SDL_GetJoystickID(joystick)))) {
             #ifdef SDL_JOYSTICK_HIDAPI
             result = SDL_SYS_JoystickIsHaptic(joystick) || SDL_HIDAPI_JoystickIsHaptic(joystick);
             #else
@@ -367,6 +367,7 @@ SDL_Haptic *SDL_OpenHapticFromJoystick(SDL_Joystick *joystick)
         if (SDL_HIDAPI_JoystickIsHaptic(joystick)) {
             if (!SDL_HIDAPI_HapticOpenFromJoystick(haptic, joystick)) {
                 SDL_SetError("Haptic: SDL_HIDAPI_HapticOpenFromJoystick failed.");
+                SDL_SetObjectValid(haptic, SDL_OBJECT_TYPE_HAPTIC, false);
                 SDL_free(haptic);
                 SDL_UnlockJoysticks();
                 return NULL;

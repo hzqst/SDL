@@ -1,6 +1,6 @@
 /*
   Simple DirectMedia Layer
-  Copyright (C) 1997-2025 Sam Lantinga <slouken@libsdl.org>
+  Copyright (C) 1997-2026 Sam Lantinga <slouken@libsdl.org>
 
   This software is provided 'as-is', without any express or implied
   warranty.  In no event will the authors be held liable for any damages
@@ -31,9 +31,10 @@
 #include "SDL_blendpoint.h"
 #include "SDL_drawline.h"
 #include "SDL_drawpoint.h"
-#include "SDL_rotate.h"
 #include "SDL_triangle.h"
 #include "../../video/SDL_pixels_c.h"
+#include "../../video/SDL_rotate.h"
+#include "../../video/SDL_sysvideo.h"
 
 // SDL surface based renderer implementation
 
@@ -54,12 +55,13 @@ typedef struct
 static SDL_Surface *SW_ActivateRenderer(SDL_Renderer *renderer)
 {
     SW_RenderData *data = (SW_RenderData *)renderer->internal;
+    SDL_Window *window = renderer->window;
 
     if (!data->surface) {
         data->surface = data->window;
     }
-    if (!data->surface) {
-        SDL_Surface *surface = SDL_GetWindowSurface(renderer->window);
+    if (window && (!data->surface || !window->surface_valid)) {
+        SDL_Surface *surface = SDL_GetWindowSurface(window);
         if (surface) {
             data->surface = data->window = surface;
         }
@@ -133,7 +135,7 @@ static bool SW_ChangeTexturePalette(SDL_Renderer *renderer, SDL_Texture *texture
 
 static bool SW_CreateTexture(SDL_Renderer *renderer, SDL_Texture *texture, SDL_PropertiesID create_props)
 {
-    SDL_Surface *surface = SDL_CreateSurface(texture->w, texture->h, texture->format);
+    SDL_Surface *surface = SDL_CreateSurfaceUninitialized(texture->w, texture->h, texture->format);
     if (!surface) {
         return SDL_SetError("Can't create surface");
     }
@@ -154,11 +156,8 @@ static bool SW_CreateTexture(SDL_Renderer *renderer, SDL_Texture *texture, SDL_P
         }
     }
 
-    /* Only RLE encode textures without an alpha channel since the RLE coder
-     * discards the color values of pixels with an alpha value of zero.
-     */
-    if (texture->access == SDL_TEXTUREACCESS_STATIC && !SDL_ISPIXELFORMAT_ALPHA(surface->format)) {
-        SDL_SetSurfaceRLE(surface, 1);
+    if (texture->access == SDL_TEXTUREACCESS_STATIC) {
+        SDL_SetSurfaceRLE(surface, true);
     }
 
     return true;
@@ -400,13 +399,16 @@ static bool SW_RenderCopyEx(SDL_Renderer *renderer, SDL_Surface *surface, SDL_Te
         }
         return false;
     }
+    if (src->palette) {
+        SDL_SetSurfacePalette(src_clone, src->palette);
+    }
 
     SDL_GetSurfaceBlendMode(src, &blendmode);
     SDL_GetSurfaceAlphaMod(src, &alphaMod);
     SDL_GetSurfaceColorMod(src, &rMod, &gMod, &bMod);
 
     // SDLgfx_rotateSurface only accepts 32-bit surfaces with a 8888 layout. Everything else has to be converted.
-    if (src->fmt->bits_per_pixel != 32 || SDL_PIXELLAYOUT(src->format) != SDL_PACKEDLAYOUT_8888 || !SDL_ISPIXELFORMAT_ALPHA(src->format)) {
+    if (!(SDL_BITSPERPIXEL(src->format) == 32 && SDL_PIXELLAYOUT(src->format) == SDL_PACKEDLAYOUT_8888)) {
         blitRequired = true;
     }
 
@@ -436,7 +438,7 @@ static bool SW_RenderCopyEx(SDL_Renderer *renderer, SDL_Surface *surface, SDL_Te
      * to clear the pixels in the destination surface. The other steps are explained below.
      */
     if (blendmode == SDL_BLENDMODE_NONE && !isOpaque) {
-        mask = SDL_CreateSurface(final_rect->w, final_rect->h, SDL_PIXELFORMAT_ARGB8888);
+        mask = SDL_CreateSurfaceZeroed(final_rect->w, final_rect->h, SDL_PIXELFORMAT_ARGB8888);
         if (!mask) {
             result = false;
         } else {
@@ -449,7 +451,7 @@ static bool SW_RenderCopyEx(SDL_Renderer *renderer, SDL_Surface *surface, SDL_Te
      */
     if (result && (blitRequired || applyModulation)) {
         SDL_Rect scale_rect = tmp_rect;
-        src_scaled = SDL_CreateSurface(final_rect->w, final_rect->h, SDL_PIXELFORMAT_ARGB8888);
+        src_scaled = SDL_CreateSurfaceUninitialized(final_rect->w, final_rect->h, SDL_PIXELFORMAT_ARGB8888);
         if (!src_scaled) {
             result = false;
         } else {
@@ -662,7 +664,7 @@ static bool SW_QueueGeometry(SDL_Renderer *renderer, SDL_RenderCommand *cmd, SDL
     return true;
 }
 
-static void PrepTextureForCopy(const SDL_RenderCommand *cmd, SW_DrawStateCache *drawstate)
+static void PrepTextureForCopy(const SDL_RenderCommand *cmd, SW_DrawStateCache *drawstate, const SDL_Rect *srcrect)
 {
     const Uint8 r = drawstate->color.r;
     const Uint8 g = drawstate->color.g;
@@ -671,12 +673,13 @@ static void PrepTextureForCopy(const SDL_RenderCommand *cmd, SW_DrawStateCache *
     const SDL_BlendMode blend = cmd->data.draw.blend;
     SDL_Texture *texture = cmd->data.draw.texture;
     SDL_Surface *surface = (SDL_Surface *)texture->internal;
-    const bool colormod = ((r & g & b) != 0xFF);
-    const bool alphamod = (a != 0xFF);
-    const bool blending = ((blend == SDL_BLENDMODE_ADD) || (blend == SDL_BLENDMODE_MOD) || (blend == SDL_BLENDMODE_MUL));
 
-    if (colormod || alphamod || blending) {
-        SDL_SetSurfaceRLE(surface, 0);
+    if (SDL_SurfaceHasRLE(surface) &&
+        srcrect &&
+        texture->access == SDL_TEXTUREACCESS_STATIC &&
+        SDL_ISPIXELFORMAT_ALPHA(surface->format) &&
+        (srcrect->x != 0 || srcrect->y != 0 || srcrect->w != surface->w || srcrect->h != surface->h)) {
+        SDL_SetSurfaceRLE(surface, false);
     }
 
     // !!! FIXME: we can probably avoid some of these calls.
@@ -862,7 +865,7 @@ static bool SW_RunCommandQueue(SDL_Renderer *renderer, SDL_RenderCommand *cmd, v
 
             SetDrawState(surface, &drawstate);
 
-            PrepTextureForCopy(cmd, &drawstate);
+            PrepTextureForCopy(cmd, &drawstate, srcrect);
 
             // Apply viewport
             if (drawstate.viewport && (drawstate.viewport->x || drawstate.viewport->y)) {
@@ -873,14 +876,10 @@ static bool SW_RunCommandQueue(SDL_Renderer *renderer, SDL_RenderCommand *cmd, v
             if (srcrect->w == dstrect->w && srcrect->h == dstrect->h) {
                 SDL_BlitSurface(src, srcrect, surface, dstrect);
             } else {
-                /* If scaling is ever done, permanently disable RLE (which doesn't support scaling)
-                 * to avoid potentially frequent RLE encoding/decoding.
-                 */
-                SDL_SetSurfaceRLE(surface, 0);
-
                 // Prevent to do scaling + clipping on viewport boundaries as it may lose proportion
                 if (dstrect->x < 0 || dstrect->y < 0 || dstrect->x + dstrect->w > surface->w || dstrect->y + dstrect->h > surface->h) {
-                    SDL_Surface *tmp = SDL_CreateSurface(dstrect->w, dstrect->h, src->format);
+                    SDL_PixelFormat tmp_format = SDL_ISPIXELFORMAT_ALPHA(src->format) ? SDL_PIXELFORMAT_ARGB8888 : surface->format;
+                    SDL_Surface *tmp = SDL_CreateSurfaceUninitialized(dstrect->w, dstrect->h, tmp_format);
                     // Scale to an intermediate surface, then blit
                     if (tmp) {
                         SDL_Rect r;
@@ -921,7 +920,7 @@ static bool SW_RunCommandQueue(SDL_Renderer *renderer, SDL_RenderCommand *cmd, v
         {
             CopyExData *copydata = (CopyExData *)(((Uint8 *)vertices) + cmd->data.draw.first);
             SetDrawState(surface, &drawstate);
-            PrepTextureForCopy(cmd, &drawstate);
+            PrepTextureForCopy(cmd, &drawstate, &copydata->srcrect);
 
             // Apply viewport
             if (drawstate.viewport &&
@@ -952,7 +951,7 @@ static bool SW_RunCommandQueue(SDL_Renderer *renderer, SDL_RenderCommand *cmd, v
 
                 GeometryCopyData *ptr = (GeometryCopyData *)verts;
 
-                PrepTextureForCopy(cmd, &drawstate);
+                PrepTextureForCopy(cmd, &drawstate, NULL);
 
                 // Apply viewport
                 if (drawstate.viewport && (drawstate.viewport->x || drawstate.viewport->y)) {
@@ -1160,17 +1159,52 @@ static void SW_SelectBestFormats(SDL_Renderer *renderer, SDL_PixelFormat format)
     SDL_AddSupportedTextureFormat(renderer, SDL_PIXELFORMAT_INDEX8);
 }
 
+bool SW_UpdateRendererSurface(SDL_Renderer *renderer, SDL_Surface *surface)
+{
+    SW_RenderData *data = (SW_RenderData *)renderer->internal;
+
+    if (surface) {
+        CHECK_PARAM(!SDL_SurfaceValid(surface)) {
+            return SDL_InvalidParamError("surface");
+        }
+
+        CHECK_PARAM(SDL_BITSPERPIXEL(surface->format) < 8 ||
+                    SDL_BITSPERPIXEL(surface->format) > 32) {
+            return SDL_SetError("Unsupported surface format");
+        }
+    }
+
+    if (data->surface != surface) {
+        data->surface = surface;
+        data->window = surface;
+
+        if (surface) {
+            renderer->num_texture_formats = 0;
+            SW_SelectBestFormats(renderer, surface->format);
+        }
+    }
+    return true;
+}
+
 bool SW_CreateRendererForSurface(SDL_Renderer *renderer, SDL_Surface *surface, SDL_PropertiesID create_props)
 {
     SW_RenderData *data;
 
-    CHECK_PARAM(!SDL_SurfaceValid(surface)) {
-        return SDL_InvalidParamError("surface");
+    if (surface) {
+        CHECK_PARAM(!SDL_SurfaceValid(surface)) {
+            return SDL_InvalidParamError("surface");
+        }
+
+        CHECK_PARAM(SDL_BITSPERPIXEL(surface->format) < 8 ||
+                    SDL_BITSPERPIXEL(surface->format) > 32) {
+            return SDL_SetError("Unsupported surface format");
+        }
     }
 
-    CHECK_PARAM(SDL_BITSPERPIXEL(surface->format) < 8 ||
-                SDL_BITSPERPIXEL(surface->format) > 32) {
-        return SDL_SetError("Unsupported surface format");
+    SDL_SetupRendererColorspace(renderer, create_props);
+
+    if (renderer->output_colorspace != SDL_COLORSPACE_SRGB) {
+        return SDL_SetError("Unsupported output colorspace");
     }
 
     renderer->software = true;
@@ -1212,12 +1246,8 @@ bool SW_CreateRendererForSurface(SDL_Renderer *renderer, SDL_Surface *surface, S
 
     renderer->name = SW_RenderDriver.name;
 
-    SW_SelectBestFormats(renderer, surface->format);
-
-    SDL_SetupRendererColorspace(renderer, create_props);
-
-    if (renderer->output_colorspace != SDL_COLORSPACE_SRGB) {
-        return SDL_SetError("Unsupported output colorspace");
+    if (surface) {
+        SW_SelectBestFormats(renderer, surface->format);
     }
 
     return true;
@@ -1237,18 +1267,27 @@ static bool SW_CreateRenderer(SDL_Renderer *renderer, SDL_Window *window, SDL_Pr
         }
     }
 
-    SDL_Surface *surface = SDL_GetWindowSurface(window);
+    SDL_Surface *surface = NULL;
+    if (window) {
+        surface = SDL_GetWindowSurface(window);
+    }
 
     // Reset the vsync hint if we set it above
     if (no_hint_set) {
         SDL_SetHint(SDL_HINT_RENDER_VSYNC, "");
     }
 
-    if (!SDL_SurfaceValid(surface)) {
+    if (window && !SDL_SurfaceValid(surface)) {
         return false;
     }
 
-    return SW_CreateRendererForSurface(renderer, surface, create_props);
+    if (!SW_CreateRendererForSurface(renderer, surface, create_props)) {
+        if (window) {
+            SDL_DestroyWindowSurface(window);
+        }
+        return false;
+    }
+    return true;
 }
 
 SDL_RenderDriver SW_RenderDriver = {

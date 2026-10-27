@@ -1,6 +1,6 @@
 /*
   Simple DirectMedia Layer
-  Copyright (C) 1997-2025 Sam Lantinga <slouken@libsdl.org>
+  Copyright (C) 1997-2026 Sam Lantinga <slouken@libsdl.org>
 
   This software is provided 'as-is', without any express or implied
   warranty.  In no event will the authors be held liable for any damages
@@ -59,7 +59,7 @@ struct GL_ShaderContext
     bool GL_ARB_texture_rectangle_supported;
 
     GL_ShaderData shaders[NUM_SHADERS];
-    const float *shader_params[NUM_SHADERS];
+    float *shader_params[NUM_SHADERS];
 };
 
 /* *INDENT-OFF* */ // clang-format off
@@ -443,7 +443,6 @@ static struct {
         "#version 130\n"
     },
 
-#ifdef SDL_HAVE_YUV
     // SHADER_YUV
     {
         // vertex shader
@@ -494,7 +493,6 @@ static struct {
         // fragment version
         NULL
     },
-#endif // SDL_HAVE_YUV
 };
 
 /* *INDENT-ON* */ // clang-format on
@@ -703,7 +701,20 @@ void GL_SelectShader(GL_ShaderContext *ctx, GL_Shader shader, const float *shade
 
     ctx->glUseProgramObjectARB(program);
 
-    if (shader_params && shader_params != ctx->shader_params[shader]) {
+    int shader_params_len = 0;
+    if (shader == SHADER_PALETTE_LINEAR ||
+        shader == SHADER_PALETTE_PIXELART ||
+        shader == SHADER_RGB_PIXELART ||
+        shader == SHADER_RGBA_PIXELART) {
+        shader_params_len = 4 * sizeof(float);
+    } else if (shader >= SHADER_YUV) {
+        shader_params_len = 16 * sizeof(float);
+    }
+    SDL_assert(!shader_params || shader_params_len > 0);
+
+    if (shader_params &&
+        (!ctx->shader_params[shader] ||
+         SDL_memcmp(shader_params, ctx->shader_params[shader], shader_params_len) != 0)) {
         if (shader == SHADER_PALETTE_LINEAR ||
             shader == SHADER_PALETTE_PIXELART ||
             shader == SHADER_RGB_PIXELART ||
@@ -714,7 +725,6 @@ void GL_SelectShader(GL_ShaderContext *ctx, GL_Shader shader, const float *shade
             }
         }
 
-#ifdef SDL_HAVE_YUV
         if (shader >= SHADER_YUV) {
             // YUV shader params are Yoffset, 0, Rcoeff, 0, Gcoeff, 0, Bcoeff, 0
             location = ctx->glGetUniformLocationARB(program, "Yoffset");
@@ -734,9 +744,13 @@ void GL_SelectShader(GL_ShaderContext *ctx, GL_Shader shader, const float *shade
                 ctx->glUniform3fARB(location, shader_params[12], shader_params[13], shader_params[14]);
             }
         }
-#endif // SDL_HAVE_YUV
 
-        ctx->shader_params[shader] = shader_params;
+        if (!ctx->shader_params[shader]) {
+            ctx->shader_params[shader] = (float *)SDL_malloc(shader_params_len);
+        }
+        if (ctx->shader_params[shader]) {
+            SDL_memcpy(ctx->shader_params[shader], shader_params, shader_params_len);
+        }
     }
 }
 
@@ -746,6 +760,7 @@ void GL_DestroyShaderContext(GL_ShaderContext *ctx)
 
     for (i = 0; i < NUM_SHADERS; ++i) {
         DestroyShaderProgram(ctx, &ctx->shaders[i]);
+        SDL_free(ctx->shader_params[i]);
     }
     SDL_free(ctx);
 }

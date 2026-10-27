@@ -1,6 +1,6 @@
 /*
   Simple DirectMedia Layer
-  Copyright (C) 1997-2025 Sam Lantinga <slouken@libsdl.org>
+  Copyright (C) 1997-2026 Sam Lantinga <slouken@libsdl.org>
 
   This software is provided 'as-is', without any express or implied
   warranty.  In no event will the authors be held liable for any damages
@@ -43,7 +43,11 @@ typedef struct SDL_LibUSBContext
     );
     void (LIBUSB_CALL *free_config_descriptor)(struct libusb_config_descriptor *config);
     uint8_t (LIBUSB_CALL *get_bus_number)(libusb_device *dev);
+#ifdef SDL_PLATFORM_FREEBSD
+    int (LIBUSB_CALL *get_port_numbers)(libusb_device *dev, uint8_t *port_numbers, uint8_t port_numbers_len);
+#else
     int (LIBUSB_CALL *get_port_numbers)(libusb_device *dev, uint8_t *port_numbers, int port_numbers_len);
+#endif
     uint8_t (LIBUSB_CALL *get_device_address)(libusb_device *dev);
     int (LIBUSB_CALL *open)(libusb_device *dev, libusb_device_handle **dev_handle);
     void (LIBUSB_CALL *close)(libusb_device_handle *dev_handle);
@@ -53,6 +57,7 @@ typedef struct SDL_LibUSBContext
     int (LIBUSB_CALL *kernel_driver_active)(libusb_device_handle *dev_handle, int interface_number);
     int (LIBUSB_CALL *detach_kernel_driver)(libusb_device_handle *dev_handle, int interface_number);
     int (LIBUSB_CALL *attach_kernel_driver)(libusb_device_handle *dev_handle, int interface_number);
+    int (LIBUSB_CALL *set_auto_detach_kernel_driver)(libusb_device_handle *dev_handle, int enable);
     int (LIBUSB_CALL *set_interface_alt_setting)(libusb_device_handle *dev, int interface_number, int alternate_setting);
     struct libusb_transfer * (LIBUSB_CALL *alloc_transfer)(int iso_packets);
     int (LIBUSB_CALL *submit_transfer)(struct libusb_transfer *transfer);
@@ -86,6 +91,10 @@ typedef struct SDL_LibUSBContext
     );
     int (LIBUSB_CALL *handle_events)(libusb_context *ctx);
     int (LIBUSB_CALL *handle_events_completed)(libusb_context *ctx, int *completed);
+    void (LIBUSB_CALL *interrupt_event_handler)(libusb_context *ctx);
+    int (LIBUSB_CALL *has_capability)(uint32_t capability);
+    int (LIBUSB_CALL *hotplug_register_callback)(libusb_context *ctx, int events, int flags, int vendor_id, int product_id, int dev_class, libusb_hotplug_callback_fn cb_fn, void *user_data, libusb_hotplug_callback_handle *callback_handle);
+    void (LIBUSB_CALL *hotplug_deregister_callback)(libusb_context *ctx, libusb_hotplug_callback_handle callback_handle);
     const char * (LIBUSB_CALL *error_name)(int errcode);
 /* *INDENT-ON* */ // clang-format on
 

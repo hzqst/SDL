@@ -1,6 +1,6 @@
 /*
   Simple DirectMedia Layer
-  Copyright (C) 1997-2025 Sam Lantinga <slouken@libsdl.org>
+  Copyright (C) 1997-2026 Sam Lantinga <slouken@libsdl.org>
 
   This software is provided 'as-is', without any express or implied
   warranty.  In no event will the authors be held liable for any damages
@@ -141,6 +141,7 @@ typedef enum
 @property(nonatomic) SDL_Window *window;
 @property(nonatomic) NSWindow *nswindow;
 @property(nonatomic) NSView *sdlContentView;
+@property(nonatomic) NSRect viewport;
 @property(nonatomic) NSMutableArray *nscontexts;
 @property(nonatomic) BOOL in_blocking_transition;
 @property(nonatomic) BOOL fullscreen_space_requested;

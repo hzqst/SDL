@@ -1,6 +1,6 @@
 /*
   Simple DirectMedia Layer
-  Copyright (C) 1997-2025 Sam Lantinga <slouken@libsdl.org>
+  Copyright (C) 1997-2026 Sam Lantinga <slouken@libsdl.org>
 
   This software is provided 'as-is', without any express or implied
   warranty.  In no event will the authors be held liable for any damages
@@ -30,10 +30,6 @@
 // this checks for HAVE_DBUS_DBUS_H internally.
 #include "core/linux/SDL_dbus.h"
 
-#if defined(SDL_PLATFORM_UNIX) && !defined(SDL_PLATFORM_ANDROID)
-#include "core/unix/SDL_gtk.h"
-#endif
-
 #ifdef SDL_PLATFORM_EMSCRIPTEN
 #include <emscripten.h>
 #endif
@@ -48,9 +44,12 @@
 #include "camera/SDL_camera_c.h"
 #include "cpuinfo/SDL_cpuinfo_c.h"
 #include "events/SDL_events_c.h"
+#include "filesystem/SDL_filesystem_c.h"
 #include "haptic/SDL_haptic_c.h"
+#include "io/SDL_asyncio_c.h"
 #include "joystick/SDL_gamepad_c.h"
 #include "joystick/SDL_joystick_c.h"
+#include "notification/SDL_notification_c.h"
 #include "render/SDL_sysrender.h"
 #include "sensor/SDL_sensor_c.h"
 #include "stdlib/SDL_getenv_c.h"
@@ -59,13 +58,14 @@
 #include "video/SDL_pixels_c.h"
 #include "video/SDL_surface_c.h"
 #include "video/SDL_video_c.h"
-#include "filesystem/SDL_filesystem_c.h"
-#include "io/SDL_asyncio_c.h"
 #ifdef SDL_PLATFORM_ANDROID
 #include "core/android/SDL_android.h"
 #endif
+#ifdef SDL_PLATFORM_OPENHARMONY
+#include "core/openharmony/SDL_openharmony.h"
+#endif
 
-#define SDL_INIT_EVERYTHING ~0U
+#define SDL_ALL_SUBSYSTEM_FLAGS ~0U
 
 // Initialization/Cleanup routines
 #include "timer/SDL_timer_c.h"
@@ -172,8 +172,21 @@ const char *SDL_GetAppMetadataProperty(const char *name)
         value = SDL_GetStringProperty(SDL_GetGlobalProperties(), name, NULL);
     }
     if (!value || !*value) {
+#ifdef SDL_PLATFORM_LINUX
+        if (SDL_IsUbuntuTouch()) {
+            if (SDL_strcmp(name, SDL_PROP_APP_METADATA_IDENTIFIER_STRING) == 0) {
+                value = SDL_GetStringProperty(SDL_GetGlobalProperties(), SDL_PROP_GLOBAL_SYSTEM_UBUNTU_TOUCH_APPID_STRING, NULL);
+            } else if (SDL_strcmp(name, SDL_PROP_APP_METADATA_VERSION_STRING) == 0) {
+                value = SDL_GetStringProperty(SDL_GetGlobalProperties(), SDL_PROP_GLOBAL_SYSTEM_UBUNTU_TOUCH_APP_VERSION_STRING, NULL);
+            }
+        }
+#endif
+
         if (SDL_strcmp(name, SDL_PROP_APP_METADATA_NAME_STRING) == 0) {
-            value = "SDL Application";
+            value = SDL_GetExeName();
+            if (!value) {
+                value = "SDL Application";
+            }
         } else if (SDL_strcmp(name, SDL_PROP_APP_METADATA_TYPE_STRING) == 0) {
             value = "application";
         }
@@ -189,6 +202,8 @@ static bool SDL_MainIsReady = false;
 static bool SDL_MainIsReady = true;
 #endif
 static SDL_ThreadID SDL_MainThreadID = 0;
+static SDL_ThreadID SDL_EventsThreadID = 0;
+static SDL_ThreadID SDL_VideoThreadID = 0;
 static bool SDL_bInMainQuit = false;
 static Uint8 SDL_SubsystemRefCount[32];
 
@@ -266,14 +281,21 @@ void SDL_SetMainReady(void)
 
 bool SDL_IsMainThread(void)
 {
-    if (SDL_MainThreadID == 0) {
-        // Not initialized yet?
-        return true;
+    if (SDL_VideoThreadID) {
+        return (SDL_GetCurrentThreadID() == SDL_VideoThreadID);
     }
-    if (SDL_MainThreadID == SDL_GetCurrentThreadID()) {
-        return true;
+    if (SDL_EventsThreadID) {
+        return (SDL_GetCurrentThreadID() == SDL_EventsThreadID);
     }
-    return false;
+    if (SDL_MainThreadID) {
+        return (SDL_GetCurrentThreadID() == SDL_MainThreadID);
+    }
+    return true;
+}
+
+bool SDL_IsVideoThread(void)
+{
+    return (SDL_GetCurrentThreadID() == SDL_VideoThreadID);
 }
 
 // Initialize all the subsystems that require initialization before threads start
@@ -281,10 +303,16 @@ void SDL_InitMainThread(void)
 {
     static bool done_info = false;
 
+    // If we haven't done it by now, mark this as the main thread
+    if (SDL_MainThreadID == 0) {
+        SDL_MainThreadID = SDL_GetCurrentThreadID();
+    }
+
     SDL_InitTLSData();
     SDL_InitEnvironment();
     SDL_InitTicks();
     SDL_InitFilesystem();
+    SDL_CreateEventLock();
 
     if (!done_info) {
         const char *value;
@@ -303,6 +331,7 @@ void SDL_InitMainThread(void)
 
 static void SDL_QuitMainThread(void)
 {
+    SDL_DestroyEventLock();
     SDL_QuitFilesystem();
     SDL_QuitTicks();
     SDL_QuitEnvironment();
@@ -317,10 +346,35 @@ bool SDL_InitSubSystem(SDL_InitFlags flags)
         return SDL_SetError("Application didn't initialize properly, did you include SDL_main.h in the file containing your main() function?");
     }
 
+#ifdef SDL_PLATFORM_EMSCRIPTEN
+    MAIN_THREAD_EM_ASM({
+        // make sure this generic table to hang SDL-specific Javascript stuff is available at init time.
+        if (typeof(Module['SDL3']) === 'undefined') {
+            Module['SDL3'] = {};
+        }
+
+        var SDL3 = Module['SDL3'];
+        #if defined(__wasm32__)
+        if (typeof(SDL3.JSVarToCPtr) === 'undefined') { SDL3.JSVarToCPtr = function(v) { return v; }; }
+        if (typeof(SDL3.CPtrToHeap32Index) === 'undefined') { SDL3.CPtrToHeap32Index = function(ptr) { return ptr >>> 2; }; }
+        #elif defined(__wasm64__)
+        if (typeof(SDL3.JSVarToCPtr) === 'undefined') { SDL3.JSVarToCPtr = function(v) { return BigInt(v); }; }
+        if (typeof(SDL3.CPtrToHeap32Index) === 'undefined') { SDL3.CPtrToHeap32Index = function(ptr) { return Number(ptr / 4n); }; }
+        #else
+        #error Please define your platform.
+        #endif
+    });
+#endif
+
     SDL_InitMainThread();
 
 #ifdef SDL_USE_LIBDBUS
     SDL_DBus_Init();
+#endif
+
+#ifdef SDL_PLATFORM_APPLE
+    // Apple platforms require the notification delegate to be registered early.
+    Cocoa_RegisterNotificationDelegate();
 #endif
 
 #ifdef SDL_PLATFORM_WINDOWS
@@ -335,6 +389,11 @@ bool SDL_InitSubSystem(SDL_InitFlags flags)
     if (flags & SDL_INIT_EVENTS) {
         if (SDL_ShouldInitSubsystem(SDL_INIT_EVENTS)) {
             SDL_IncrementSubsystemRefCount(SDL_INIT_EVENTS);
+
+            // Note which thread initialized events
+            // This is the thread which should be pumping events
+            SDL_EventsThreadID = SDL_GetCurrentThreadID();
+
             if (!SDL_InitEvents()) {
                 SDL_DecrementSubsystemRefCount(SDL_INIT_EVENTS);
                 goto quit_and_error;
@@ -354,13 +413,17 @@ bool SDL_InitSubSystem(SDL_InitFlags flags)
                 goto quit_and_error;
             }
 
+            SDL_IncrementSubsystemRefCount(SDL_INIT_VIDEO);
+
             // We initialize video on the main thread
             // On Apple platforms this is a requirement.
             // On other platforms, this is the definition.
-            SDL_MainThreadID = SDL_GetCurrentThreadID();
+            SDL_VideoThreadID = SDL_GetCurrentThreadID();
+#ifdef SDL_PLATFORM_APPLE
+            SDL_assert(SDL_VideoThreadID == SDL_MainThreadID);
+#endif
 
-            SDL_IncrementSubsystemRefCount(SDL_INIT_VIDEO);
-            if (!SDL_VideoInit(NULL)) {
+            if (!SDL_InitVideo(NULL)) {
                 SDL_DecrementSubsystemRefCount(SDL_INIT_VIDEO);
                 SDL_PushError();
                 SDL_QuitSubSystem(SDL_INIT_EVENTS);
@@ -505,7 +568,7 @@ bool SDL_InitSubSystem(SDL_InitFlags flags)
             }
 
             SDL_IncrementSubsystemRefCount(SDL_INIT_CAMERA);
-            if (!SDL_CameraInit(NULL)) {
+            if (!SDL_InitCamera(NULL)) {
                 SDL_DecrementSubsystemRefCount(SDL_INIT_CAMERA);
                 SDL_PushError();
                 SDL_QuitSubSystem(SDL_INIT_EVENTS);
@@ -608,7 +671,8 @@ void SDL_QuitSubSystem(SDL_InitFlags flags)
     if (flags & SDL_INIT_VIDEO) {
         if (SDL_ShouldQuitSubsystem(SDL_INIT_VIDEO)) {
             SDL_QuitRender();
-            SDL_VideoQuit();
+            SDL_QuitVideo();
+            SDL_VideoThreadID = 0;
             // video implies events
             SDL_QuitSubSystem(SDL_INIT_EVENTS);
         }
@@ -619,6 +683,7 @@ void SDL_QuitSubSystem(SDL_InitFlags flags)
     if (flags & SDL_INIT_EVENTS) {
         if (SDL_ShouldQuitSubsystem(SDL_INIT_EVENTS)) {
             SDL_QuitEvents();
+            SDL_EventsThreadID = 0;
         }
         SDL_DecrementSubsystemRefCount(SDL_INIT_EVENTS);
     }
@@ -637,7 +702,7 @@ Uint32 SDL_WasInit(SDL_InitFlags flags)
     }
 
     if (!flags) {
-        flags = SDL_INIT_EVERYTHING;
+        flags = SDL_ALL_SUBSYSTEM_FLAGS;
     }
 
     num_subsystems = SDL_min(num_subsystems, SDL_MostSignificantBitIndex32(flags) + 1);
@@ -662,15 +727,12 @@ void SDL_Quit(void)
 #ifdef SDL_PLATFORM_WINDOWS
     SDL_HelperWindowDestroy();
 #endif
-    SDL_QuitSubSystem(SDL_INIT_EVERYTHING);
+    SDL_QuitSubSystem(SDL_ALL_SUBSYSTEM_FLAGS);
     SDL_CleanupTrays();
+    SDL_CleanupNotifications();
 
 #ifdef SDL_USE_LIBDBUS
     SDL_DBus_Quit();
-#endif
-
-#if defined(SDL_PLATFORM_UNIX) && !defined(SDL_PLATFORM_ANDROID) && !defined(SDL_PLATFORM_EMSCRIPTEN)
-    SDL_Gtk_Quit();
 #endif
 
     SDL_QuitTimers();
@@ -686,7 +748,7 @@ void SDL_Quit(void)
     /* Now that every subsystem has been quit, we reset the subsystem refcount
      * and the list of initialized subsystems.
      */
-    SDL_memset(SDL_SubsystemRefCount, 0x0, sizeof(SDL_SubsystemRefCount));
+    SDL_zeroa(SDL_SubsystemRefCount);
 
     SDL_QuitLog();
     SDL_QuitHints();
@@ -734,6 +796,8 @@ const char *SDL_GetPlatform(void)
     return "Linux";
 #elif defined(__MINT__)
     return "Atari MiNT";
+#elif defined(SDL_PLATFORM_MSDOS)
+    return "MS-DOS";
 #elif defined(SDL_PLATFORM_MACOS)
     return "macOS";
 #elif defined(SDL_PLATFORM_NETBSD)
@@ -742,6 +806,8 @@ const char *SDL_GetPlatform(void)
     return "Nokia N-Gage";
 #elif defined(SDL_PLATFORM_OPENBSD)
     return "OpenBSD";
+#elif defined(SDL_PLATFORM_OPENHARMONY)
+    return "OpenHarmony";
 #elif defined(SDL_PLATFORM_OS2)
     return "OS/2";
 #elif defined(SDL_PLATFORM_OSF)
@@ -752,6 +818,8 @@ const char *SDL_GetPlatform(void)
     return "RISC OS";
 #elif defined(SDL_PLATFORM_SOLARIS)
     return "Solaris";
+#elif defined(SDL_PLATFORM_CYGWIN)
+    return "Cygwin";
 #elif defined(SDL_PLATFORM_WIN32)
     return "Windows";
 #elif defined(SDL_PLATFORM_WINGDK)
@@ -760,6 +828,8 @@ const char *SDL_GetPlatform(void)
     return "Xbox One";
 #elif defined(SDL_PLATFORM_XBOXSERIES)
     return "Xbox Series X|S";
+#elif defined(SDL_PLATFORM_VISIONOS)
+    return "visionOS";
 #elif defined(SDL_PLATFORM_IOS)
     return "iOS";
 #elif defined(SDL_PLATFORM_TVOS)
@@ -781,28 +851,66 @@ const char *SDL_GetPlatform(void)
 #endif
 }
 
+bool SDL_IsPhone(void)
+{
+    return SDL_GetDeviceFormFactor() == SDL_FORMFACTOR_PHONE;
+}
+
 bool SDL_IsTablet(void)
 {
-#ifdef SDL_PLATFORM_ANDROID
-    return SDL_IsAndroidTablet();
-#elif defined(SDL_PLATFORM_IOS)
-    extern bool SDL_IsIPad(void);
-    return SDL_IsIPad();
-#else
-    return false;
-#endif
+    return SDL_GetDeviceFormFactor() == SDL_FORMFACTOR_TABLET;
 }
 
 bool SDL_IsTV(void)
 {
-#ifdef SDL_PLATFORM_ANDROID
-    return SDL_IsAndroidTV();
+    return SDL_GetDeviceFormFactor() == SDL_FORMFACTOR_TV;
+}
+
+SDL_FormFactor SDL_GetDeviceFormFactor(void)
+{
+#ifdef SDL_FORMFACTOR_PRIVATE
+    return SDL_FORMFACTOR_PRIVATE;
+#elif defined(SDL_PLATFORM_ANDROID)
+    return SDL_GetAndroidDeviceFormFactor();
+#elif defined(SDL_PLATFORM_OPENHARMONY)
+    return SDL_GetOpenHarmonyDeviceFormFactor();
 #elif defined(SDL_PLATFORM_IOS)
-    extern bool SDL_IsAppleTV(void);
-    return SDL_IsAppleTV();
+    extern SDL_FormFactor SDL_GetUIKitDeviceFormFactor(void);
+    return SDL_GetUIKitDeviceFormFactor();
+#elif defined(SDL_PLATFORM_XBOXONE) || defined(SDL_PLATFORM_XBOXSERIES) || defined(SDL_PLATFORM_PS2)
+    return SDL_FORMFACTOR_CONSOLE;
+#elif defined(SDL_PLATFORM_PSP) || defined(SDL_PLATFORM_VITA) || defined(SDL_PLATFORM_3DS)
+    return SDL_FORMFACTOR_HANDHELD;
+#elif defined(SDL_PLATFORM_QNXNTO)
+    /* TODO: QNX is used in BlackBerry phones and tablets, and in many embedded devices */
+    return SDL_FORMFACTOR_UNKNOWN;
+#elif defined(SDL_PLATFORM_WINGDK)
+    /* TODO: GDK can be either desktop Windows or XBox */
+    return SDL_FORMFACTOR_UNKNOWN;
 #else
-    return false;
+    return SDL_FORMFACTOR_DESKTOP;
 #endif
+}
+
+const char* SDL_GetDeviceFormFactorName(SDL_FormFactor form_factor)
+{
+    switch (form_factor)
+    {
+#define CASE(x) case x: return #x;
+    default:
+    CASE(SDL_FORMFACTOR_UNKNOWN)
+    CASE(SDL_FORMFACTOR_DESKTOP)
+    CASE(SDL_FORMFACTOR_LAPTOP)
+    CASE(SDL_FORMFACTOR_PHONE)
+    CASE(SDL_FORMFACTOR_TABLET)
+    CASE(SDL_FORMFACTOR_CONSOLE)
+    CASE(SDL_FORMFACTOR_HANDHELD)
+    CASE(SDL_FORMFACTOR_WATCH)
+    CASE(SDL_FORMFACTOR_TV)
+    CASE(SDL_FORMFACTOR_HEADSET)
+    CASE(SDL_FORMFACTOR_CAR)
+#undef CASE
+    }
 }
 
 static SDL_Sandbox SDL_DetectSandbox(void)
@@ -816,6 +924,12 @@ static SDL_Sandbox SDL_DetectSandbox(void)
      * unrelated reasons. This is the same thing WebKitGTK does. */
     if (SDL_getenv("SNAP") && SDL_getenv("SNAP_NAME") && SDL_getenv("SNAP_REVISION")) {
         return SDL_SANDBOX_SNAP;
+    }
+
+    /* Ubuntu Touch also supports Snap; check for classic sandboxing only if
+     * Snap hasn't been detected. */
+    if (SDL_getenv("LOMIRI_APPLICATION_ISOLATION") || SDL_getenv("CLICKABLE_DESKTOP_MODE")) {
+        return SDL_SANDBOX_LOMIRI;
     }
 
     if (access("/run/host/container-manager", F_OK) == 0) {

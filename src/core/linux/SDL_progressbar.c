@@ -1,6 +1,6 @@
 /*
   Simple DirectMedia Layer
-  Copyright (C) 1997-2025 Sam Lantinga <slouken@libsdl.org>
+  Copyright (C) 1997-2026 Sam Lantinga <slouken@libsdl.org>
 
   This software is provided 'as-is', without any express or implied
   warranty.  In no event will the authors be held liable for any damages
@@ -49,17 +49,23 @@ static char *GetDBUSObjectPath(void)
 
     // Ensure it starts with a letter or underscore
     if (!SDL_isalpha(app_id[0]) && app_id[0] != '_') {
+        app_id = SDL_realloc(app_id, SDL_strlen(app_id) + 2);
+        if (!app_id) {
+            return NULL;
+        }
         SDL_memmove(app_id + 1, app_id, SDL_strlen(app_id) + 1);
         app_id[0] = '_';
     }
 
     // Create full path
-    char path[1024];
-    SDL_snprintf(path, sizeof(path), "/org/libsdl/%s_%d", app_id, getpid());
+    char *path;
+    if (SDL_asprintf(&path, "/org/libsdl/%s_%d", app_id, getpid()) < 0) {
+        path = NULL;
+    }
 
     SDL_free(app_id);
 
-    return SDL_strdup(path);
+    return path;
 }
 
 static char *GetAppDesktopPath(void)
@@ -126,7 +132,7 @@ bool DBUS_ApplyWindowProgress(SDL_VideoDevice *_this, SDL_Window *window)
 
     DBusMessageIter args, props;
     dbus->message_iter_init_append(msg, &args);
-    dbus->message_iter_append_basic(&args, DBUS_TYPE_STRING, &desktop_path);   // Setup app_uri paramter
+    dbus->message_iter_append_basic(&args, DBUS_TYPE_STRING, &desktop_path);   // Setup app_uri parameter
     dbus->message_iter_open_container(&args, DBUS_TYPE_ARRAY, "{sv}", &props); // Setup properties parameter
     DBusMessageIter key_it, value_it;
     // Set progress visible property

@@ -1,6 +1,6 @@
 /*
   Simple DirectMedia Layer
-  Copyright (C) 1997-2025 Sam Lantinga <slouken@libsdl.org>
+  Copyright (C) 1997-2026 Sam Lantinga <slouken@libsdl.org>
 
   This software is provided 'as-is', without any express or implied
   warranty.  In no event will the authors be held liable for any damages
@@ -91,7 +91,7 @@ bool Android_Vulkan_LoadLibrary(SDL_VideoDevice *_this, const char *path)
         SDL_SetError("Installed Vulkan doesn't implement the " VK_KHR_SURFACE_EXTENSION_NAME " extension");
         goto fail;
     } else if (!hasAndroidSurfaceExtension) {
-        SDL_SetError("Installed Vulkan doesn't implement the " VK_KHR_ANDROID_SURFACE_EXTENSION_NAME "extension");
+        SDL_SetError("Installed Vulkan doesn't implement the " VK_KHR_ANDROID_SURFACE_EXTENSION_NAME " extension");
         goto fail;
     }
     return true;
@@ -115,9 +115,7 @@ char const * const *Android_Vulkan_GetInstanceExtensions(SDL_VideoDevice *_this,
     static const char *const extensionsForAndroid[] = {
         VK_KHR_SURFACE_EXTENSION_NAME, VK_KHR_ANDROID_SURFACE_EXTENSION_NAME
     };
-    if (count) {
-        *count = SDL_arraysize(extensionsForAndroid);
-    }
+    *count = SDL_arraysize(extensionsForAndroid);
     return extensionsForAndroid;
 }
 
@@ -144,6 +142,11 @@ bool Android_Vulkan_CreateSurface(SDL_VideoDevice *_this,
     if (!vkCreateAndroidSurfaceKHR) {
         return SDL_SetError(VK_KHR_ANDROID_SURFACE_EXTENSION_NAME
                             " extension is not enabled in the Vulkan instance.");
+    }
+
+    if (!windowData->native_window) {
+        // passing a NULL window violates Vulkan spec
+        return SDL_SetError("Android native window is not available for surface creation, usually because of backgrounding");
     }
 
     SDL_zero(createInfo);
