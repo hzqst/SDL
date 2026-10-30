@@ -471,8 +471,9 @@ static BOOL WIN_DeclareDPIAwareUnaware(SDL_VideoDevice *_this)
     SDL_VideoData *data = _this->internal;
 
     if (data->SetProcessDpiAwarenessContext) {
-        data->dpi_unaware_context_declared = true;
-        return data->SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_UNAWARE);
+        BOOL result = data->SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_UNAWARE);
+        data->dpi_unaware_context_declared = (result != FALSE);
+        return result;
     } else if (data->SetProcessDpiAwareness) {
         // Windows 8.1
         return SUCCEEDED(data->SetProcessDpiAwareness(PROCESS_DPI_UNAWARE));

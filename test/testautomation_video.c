@@ -5,6 +5,10 @@
 #include <SDL3/SDL_test.h>
 #include "testautomation_suites.h"
 
+#ifdef SDL_PLATFORM_WINDOWS
+#include <windows.h>
+#endif
+
 /* Private helpers */
 
 static bool VideoSupportsWindowPositioning(void)
@@ -529,10 +533,30 @@ static int SDLCALL video_getWindowDisplayModeNegative(void *arg)
 static void setAndCheckWindowMouseGrabState(SDL_Window *window, bool desiredState)
 {
     bool currentState;
+#ifdef SDL_PLATFORM_WINDOWS
+    HMODULE user32 = GetModuleHandleA("user32.dll");
+    DPI_AWARENESS_CONTEXT (WINAPI *set_dpi_context)(DPI_AWARENESS_CONTEXT) =
+        (DPI_AWARENESS_CONTEXT (WINAPI *)(DPI_AWARENESS_CONTEXT))GetProcAddress(user32, "SetThreadDpiAwarenessContext");
+    BOOL (WINAPI *equal_dpi_contexts)(DPI_AWARENESS_CONTEXT, DPI_AWARENESS_CONTEXT) =
+        (BOOL (WINAPI *)(DPI_AWARENESS_CONTEXT, DPI_AWARENESS_CONTEXT))GetProcAddress(user32, "AreDpiAwarenessContextsEqual");
+    DPI_AWARENESS_CONTEXT previous_context = NULL;
+
+    if (set_dpi_context && equal_dpi_contexts) {
+        previous_context = set_dpi_context(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+    }
+#endif
 
     /* Set state */
     SDL_SetWindowMouseGrab(window, desiredState);
     SDLTest_AssertPass("Call to SDL_SetWindowMouseGrab(%s)", (desiredState == false) ? "false" : "true");
+
+#ifdef SDL_PLATFORM_WINDOWS
+    if (previous_context) {
+        DPI_AWARENESS_CONTEXT grab_context = set_dpi_context(previous_context);
+        SDLTest_AssertCheck(equal_dpi_contexts(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, grab_context),
+                            "Window mouse grab preserves the thread DPI awareness context");
+    }
+#endif
 
     /* Get and check state */
     currentState = SDL_GetWindowMouseGrab(window);
